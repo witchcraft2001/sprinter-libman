@@ -1,0 +1,5 @@
+; TEST.DLL
+
+TEST_INIT	equ	0
+TEST_FINI	equ	1
+TEST_USER	equ	2

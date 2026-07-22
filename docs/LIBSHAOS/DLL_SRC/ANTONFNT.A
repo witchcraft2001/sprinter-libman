@@ -1,0 +1,309 @@
+; Complilable by zmac and mk_dll
+
+	org	#0000
+	db	"L0"
+	dw	#0000 ; size of file
+	dw	#0000 ; offset to bitmap
+	dw	#0000 ; size of bitmap
+	dw	#0000 ; cheksum
+	; data
+	db	19
+	db	3
+	dw	2021
+	dw	#0102 ; v1.2
+	db	"Anton Enin Font",0
+	jp	init
+	jp	free
+	jp	fnstyle
+	jp	aprint
+
+;[]=======================================================================[]
+;
+; antonfnt.a - DLL version of aprint
+;
+; Created by Anton Enin 26-June-2002
+;
+; Modified by Alexander "Shaos" Shabarshin on 23-July-2002
+;
+; DLL version by A.A.Shabarshin 23-July-2002 (v1.1) and 19-March-2021 (v1.2)
+;
+; Copyright (C) 2002 R-lab
+;
+;[]=======================================================================[]
+
+VPAGE		equ	#50			; video memory page
+YPORT		equ	#89			; y pos for write to the vram
+PAGE1		equ	#A2			;
+
+init:	xor	a
+     	ret
+free:
+	ret
+
+fnstyle:
+	sub	a
+	call	ClearVideoRam
+	ld	hl,CustomPalette
+	ld	de,#1000
+	ld	bc,#FFA4
+	sub	a
+	rst	#08			; load palette
+	ret
+
+aprint:
+	ex	de,hl
+	push	ix
+	pop	de
+	push	iy
+	pop	bc
+	call	TextOut
+	ret
+
+;[]=======================================================================[]
+; Clear video memory (first screen)
+; Input:
+;	a - clear color (0-15)
+
+ClearVideoRam:
+		and	#0F
+		ld	e, a
+		rlca
+		rlca
+		rlca
+		rlca
+		or	e
+		ld	e, a
+		in	a, (YPORT)		; store modify ports
+		ld	c, a
+		in	a, (PAGE1)
+		ld	b, a
+		push	bc
+		ld	a, VPAGE
+		out	(PAGE1), a
+		ld	hl, #4000
+		ld	bc, 320			; screen x size in bytes
+		di
+		ld	d, d
+		ld	a, #00			; set accel lenght to 256 bytes
+loop:		ld	e, e			; fill vertical lines
+		ld	(hl), e
+		ld	b, b
+		inc	hl
+		dec	bc
+		ld	a, b
+		or	c
+		jr	nz, loop
+		ei
+		pop	bc
+		ld	a, b
+		out	(PAGE1), a
+		ld	a, c
+		out	(YPORT), a		; restore modify ports
+		ret
+
+
+;[]=======================================================================[]
+;
+; Draw text string to the screen 64#256 in 16colors
+; Input:
+;	hl - pointer to the C string (0 - end string)
+;	de - x position
+;	bc - y position
+;	a  - background and foreground color
+;		d7 - d4 background color (0-15)
+;		d3 - d0 foreground color (0-15)
+;
+; Output:
+;	hl - pointer to the next byte behind string
+;
+; Destroy registers:
+;	'hl, 'de, 'bc
+
+TextOut:
+		push	iy
+		ld	b, a			; store colors
+		ld	a,c			; y position
+		ld	(ylpos),a			
+		in	a, (YPORT)		; store Y_PORT
+		push	af
+		in	a, (PAGE1)
+		ld	(yhpag), a			; store PAGE1
+		call	PreparePrintColors
+		push	de			; x position
+		exx
+		pop	bc
+		srl	b
+		rr	c			; start address for x position
+		set	6, b			; print address start from #4000
+		ld	hl, BackgroundBuffer	; background buffer
+		ld	de, ForegroundBuffer	; foreground buffer
+		exx
+		ld	c, l			; pointer to the string
+		ld	b, h
+; now:
+;	bc  - pointer to the C string
+;       'hl - pointer to the background buffer
+;       'de - pointer to the foreground buffer
+;       'bc - x position
+;  	ylpos - y position
+
+		di				; disable interrupts
+		ld	d, d			; set acceleration work lenght
+		ld	a, #08
+		ld	b, b
+		ld	a, (bc)			; test on null string
+		inc	bc
+		or	a
+		jr	z, exit
+loop1:
+		push	bc
+		ld	bc,MyFont
+		ld	l, a          		; font is always aligned to 256 bytes
+		ld	h, 0			; pointer to the specialy font
+		add	hl,bc
+		ld	b, (hl)			; character size x
+		inc	h
+		ld	e, (hl)
+		inc	h
+		ld	d, (hl)			; offset to character image
+		ld	hl,Myfont
+		add	hl,de
+		ld	de, #0008		; line lenght in character image
+		ld	a, VPAGE
+		out	(PAGE1), a		; set video memory to #4000-#8000
+loop2:
+		ld	l, l			; linear load
+		ld	a, (hl)			; read 8 bytes to accel memory
+		ld	b, b
+		exx
+		ld	a,(ylpos)
+		out	(YPORT), a		; set y position out
+		ld	l, l			; linear or
+		or	(hl)			; with BackgroundBuffer
+		ld	b, b
+		ex	de, hl
+		ld	l, l			; linear exclusive or
+		xor	(hl)			; with ForegroundBuffer
+		ld	a, a			; vertical write
+		ld	(bc), a			; write 8 bytes from accel memory to vram
+		ld	b, b
+		ex	de, hl
+		inc	bc			; next vertical line in video ram
+		exx
+		add	hl, de			; next line in character image
+		djnz	loop2
+		pop	bc
+		ld	a, (yhpag)
+		out	(PAGE1), a
+		ld	a, (bc)
+		inc	bc
+		or	a
+		jr	nz, loop1		; end string ?
+exit:
+		ei				; enable interrupts
+		ld	l, c			; return pointer to the end string
+		ld	h, b
+		pop	af
+		out	(YPORT), a		; restore YPORT
+		pop	iy
+		ret
+
+yhpag	db	0
+ylpos	db	0
+
+;[]=======================================================================[]
+;
+; Prepare text colors for accel text out
+; Input:
+;	b  - background and foreground color
+;		d7 - d4 background color (0-15)
+;		d3 - d0 foreground color (0-15)
+;
+; Destroy registers:
+;	a, bc, 'hl
+
+PreparePrintColors:
+		ld	a, b
+prev_color:	cp	#00			; color is prepared ?
+		ret	z
+		ld	(prev_color + 1), a
+		and	#0F			; foreground color
+		ld	c, a
+		rlca
+		rlca
+		rlca
+		rlca
+		or	c
+		exx
+		cpl
+		ld	hl, ForegroundBuffer	; foreground buffer
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		exx
+		ld	a, b
+		and	#F0			; background color
+		ld	b, a
+		rrca
+		rrca
+		rrca
+		rrca
+		or	b
+		exx
+		xor	(hl)			; exclusive or with foreground color
+		ld	hl, BackgroundBuffer	; background buffer
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		inc	hl
+		ld	(hl), a
+		exx
+		ret
+
+ForegroundBuffer	ds 8
+BackgroundBuffer	ds 8
+
+
+; palette changed from Flex Navigator to EGA in March 2021 by Shaos
+
+CustomPalette:
+		db	#00, #00, #00, #00	; Black			00
+		db	#AA, #00, #00, #00	; Blue			01
+		db	#00, #AA, #00, #00	; Green			02
+		db	#AA, #AA, #00, #00	; Cyan			03
+		db	#00, #00, #AA, #00	; Red			04
+		db	#AA, #00, #AA, #00	; Magenta		05
+		db	#00, #55, #AA, #00	; Brown			06
+		db	#AA, #AA, #AA, #00	; White			07
+		db	#55, #55, #55, #00	; Dark Gray		08
+		db	#FF, #55, #55, #00	; Bright Blue		09
+		db	#55, #FF, #55, #00	; Bright Green		0A
+		db	#FF, #FF, #55, #00	; Bright Cyan		0B
+		db	#55, #55, #FF, #00	; Bright Red		0C
+		db	#FF, #55, #FF, #00	; Bright Magenta	0D
+		db	#55, #FF, #FF, #00	; Yellow		0E
+		db	#FF, #FF, #FF, #00	; Bright White		0F
+
+		include	"font.inc"

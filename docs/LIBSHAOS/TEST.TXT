@@ -1,0 +1,5 @@
+TEST.DLL - Sample library
+
+func 0 - init
+func 1 - fini
+func 2 - user

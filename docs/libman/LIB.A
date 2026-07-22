@@ -1,0 +1,44 @@
+	org	#0000
+
+	db	"L0"
+
+	dw	#0000 ; size of file
+	dw	#0000 ; offset to bitmap
+	dw	#0000 ; size of bitmap
+
+	dw	#0000 ; cheksum
+
+	; data
+	db	31
+	db	7
+	dw	2002
+
+	dw	#0102 ; v1.2
+
+	db	"Sample Library",0,0
+
+	jp	init
+	jp	free
+	jp	user
+
+init:
+	ld	hl,msg_init
+	ld	c,5ch
+	rst	10h
+	xor	a	; for LIBMAN v1.2
+	ret
+free:
+	ld	hl,msg_free
+	ld	c,5ch
+	rst	10h
+	ret
+user:
+	ld	hl,msg_user
+	ld	c,5ch
+	rst	10h
+	ret
+
+msg_init db "DLL init",13,10,0
+msg_free db "DLL free",13,10,0
+msg_user db "DLL user",13,10,0
+

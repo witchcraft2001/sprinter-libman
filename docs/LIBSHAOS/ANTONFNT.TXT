@@ -1,0 +1,34 @@
+; Load library ANTONFNT.DLL
+
+	ld	hl,name
+	ld	a,3
+	call	L_LOAD
+	jp	c,error
+	ld	(libid),hl
+	...
+name	db	"antonfnt.dll",0
+libid	dw	0
+
+
+; Make FN style graphics and palette
+
+	ld	hl,(libid)
+	ld	b,2
+	call	L_CALL
+
+
+; Draw string
+
+	ld	de,string	; text string
+	ld	ix,xcoord	; x position
+	ld	iy,ycoord       ; y position
+	ld	a,color         ; background|foreground
+	ld	hl,(libid)
+	ld	b,3
+	call	L_CALL
+
+
+; Close library
+	
+	ld	hl,(libid)
+	call	L_FREE

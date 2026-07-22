@@ -1,0 +1,124 @@
+LIBMAN - Library manager for Sprinter computer
+==============================================
+Version 1.2 (August 1, 2002)
+
+LIBMAN.A helps you to use dynamically-loaded libraries (DLLs) in
+L0 format in user applications for the Sprinter computer. After
+compilation the LIBMAN code uses about 1K of memory and gives the
+ability to load, call and close L0 libraries. The one requirement
+is that the LIBMAN code must be located in segment 1 or 2 (between
+#4000 and #BFFF).
+
+L0 library format:
+#00:(2) "L0"
+#02:(2) size of loaded library
+#04:(2) offset to table (size of code)
+#06:(2) size of table
+#08:(2) checksum
+#0A:(1) day
+#0B:(1) month
+#0C:(2) year
+#0E:(2) library version
+#10:(16) name of library
+#20: jp init
+#23: jp fini
+#26: jp ...
+...
+relocation table
+...
+
+From offset #10 the library code is compressed (using a simple algorithm
+for encoding runs of zeros). After 32-bytes header there is table of
+jumps to library functions. Quantity of functions is not limited.
+Counting of functions is started from 0. Two functions have special 
+purposes. Function 0 is function for inicialization and it is
+called during library loading. Function 1 is function for deinitialization 
+and it is called during library closing. These functions must not be 
+called by user. Function 0 must reset c-flag and set register A to 
+zero for normal end (for example by XOR A). At begin of function 0
+register A is handle of opened library file for using by user
+loading (like "primary-loader" in Sprinter DSS). For any faults
+function 0 must return c-flag and non-zero A register with error code.
+Manager close library if detect c-flag after function 0. 
+
+Up to 64 libraries can be loaded simultaneously. A library is loaded
+by the call L_LOAD. Before loading you need set HL to the address of a
+filename string and the desired segment binding to A (see below):
+
+        ld      hl,filename
+        ld      a,wind ; 1,2,3
+        call    l_load
+        jp      c,error
+        ld      (handle),hl
+        ...
+handle  dw      0
+
+Here, filename - filename string address (null terminated); wind -
+desired segment binding (for 1: #4000-#7FFF, for 2: #8000-#BFFF,
+for other: #C000-#FFFF); handle - word variable for saving handle;
+when error occurs flag c will be set. During loading the
+library code is relocated in memory for compact usage of space. If
+loading was successful, library function 0 will start (init function).
+Library size can not be more 16K.
+
+You can receive information about loaded library (32 bytes
+header) using the L_INFO call. You should set HL to the library
+handle and DE to the address of a 32 byte buffer:
+
+        ld      hl,(handle)
+        ld      de,buffer32
+        call    l_info
+        jp      c,error
+
+If the carry flag is zero (no errors) then the buffer will contain
+the library header (see above). The header has information about
+specification version (L0), size of file, size of code, data of
+creation, version of library, name of library.
+
+To call library functions you can use the L_CALL call.
+It switches the library into the segment specified earlier, runs the
+function code and rebinds the original segment contents.
+Before calling you should set HL to the library handle and
+B to the number of the library function (register C is reserved for
+future use):
+
+        ld      hl,(handle)
+        ld      b,function
+        call    l_call
+        jp      c,error
+
+If any error occure then the carry flag will be set. You can send and
+receive data from library using registers A,DE,IX,IY and auxiliary
+registers.
+
+To close the library you can use the L_FREE call. You should set HL
+to the library handle:
+
+        ld      hl,(handle)
+        call    l_free
+        jp      c,error
+
+If an error has occurred, the carry flag will be set. Before clearing
+memory, function 1 (fini) of the library will be called.
+
+For library handle (or identifier) we use a 2-byte word. This is for
+future use when we will use one library in different processes.
+
+Use MK_DLL.CPP program to make DLLs for the Sprinter (MK_DLL.EXE 
+is compiled for Windows-95/98 console). An example of a simple 
+library is LIB.A. An example of program that uses the library 
+is TEST.A.Files TEST.EXE and TEST.DLL are binary files for Sprinter 
+and have sources TEST.A and LIB.A. LIBMAN.A is included inside 
+TEST.A. ZM.BAT compiles tests on PC using ZMAC.
+
+Copyright (c) 2002, Alexander Shabarshin (shaos@mail.ru)
+
+http://shaos.ru/nedopc/sprinter/
+
+Thanx (in alphabetical order):
+ AcidRain/PowerAmiga^mOOds
+ Anton Enin
+ Garry Lancaster
+ PetersPlus Ltd.
+ Stels/Myth corp.
+ Vasil Ivanov

@@ -1,0 +1,32 @@
+LIBSHAOS - Libraries from Shaos (19.03.2021)
+============================================
+
+A number of useful libraries, created by different authors
+and assembled by Alexander Shabarshin (http://www.shaos.net).
+LIBMAN version 1.2 is included. For tests recompiling on 
+real Sprinter you may use OrgASM by Igor Zhadinets.
+
+*.ASM - test for library
+*.DLL - binariy file of library
+*.EXE - compiled test
+*.INC - library definitions
+*.TXT - library documentation
+
+[+] - sources are available (send me request)
+[-] - sources are hidden 
+
+ANTONFNT.DLL [+] "Anton Enin Font" v1.2 (19.03.2021)
+author: Anton Enin, modified by Shaos
+   
+   Library for text printing in 640x256 16-color mode (like 
+   in Flex Navigator). Based on the APRINT.ZIP package.
+
+TEST.DLL [+] "Sample Library" v1.2 (01.08.2002)
+author: Alexander Shabarshin
+
+   Simple test for DLL engine. Print on the screen called
+   function. Sources are in the LIBMAN package.
+
+
+http://sprinter.nedopc.org
+mailto:me@shaos.net

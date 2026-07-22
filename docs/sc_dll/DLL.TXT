@@ -1,0 +1,41 @@
+	/* LOADDLL */
+
+	#include <stdlib.h>
+
+	int loaddll("name.ext");
+
+	// functions loads DLL-library by name in 3rd memory window
+	// and returns handle or -1 if error
+
+
+	/* FREEDLL */
+
+	#include <stdlib.h>
+
+	int freedll(handle);
+
+	// function closes DLL-library by handle
+	// and returns 0 if allright or -1 if error
+
+
+	/* CALLDLL */
+
+	#include <stdlib.h>
+
+	int calldll(handle, func, &inregs);
+
+	// function calls procedure from library ba handle
+	// func is number of procedure
+	// inregs is REGS union for parameters
+	// it returns handle or -1 if error
+
+
+	/* INFODLL */
+
+	#include <stdlib.h>
+
+	int infodll(handle, buffer);
+
+	// function copys loaded library info to buffer 
+	// in format of library header (32 bytes)
+	// and returns handle or -1 if error

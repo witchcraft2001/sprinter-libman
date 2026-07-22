@@ -1,0 +1,93 @@
+	ORG	8100h-512
+
+;EXE-file header:
+        dw 5845h     ; EXE Signature
+        db 45h       ; Reserved (EXE type)
+        db 00h       ; Version of EXE file
+        dw 0200h     ; Code offset
+	dw 0000h
+        dw 0000h     ; Primary loader size or 0 (no primary loader)
+        dw 0000h     ; Reserved
+	dw 0000h     ; Reserved
+        dw 0000h     ; Reserved
+        dw START     ; Loading address
+        dw START     ; Starting address (register PC)
+        dw 0C000h    ; Stack address (register SP)
+        ds 490       ; Reserved 
+
+	include	"test.inc"
+
+;code of program
+
+START:
+
+; Write welcome message
+
+	ld	hl,msg
+	ld	c,5ch
+	rst	10h
+
+; Load library
+
+	ld	hl,filenam
+	ld	a,3
+	call	l_load
+	jp	c,error
+	ld	(handle),hl 
+
+; Load library second time for test
+
+	ld	hl,filenam
+	ld	a,1
+	call	l_load
+	jp	c,error
+
+; Copy library info
+
+	ld	hl,(handle)
+	ld	de,buf
+	call	l_info
+	jp	c,error
+	
+; Write name of library
+
+	ld	hl,buf+16
+	ld	c,5ch
+	rst	10h
+	ld	hl,msg2
+	ld	c,5ch
+	rst	10h
+
+; Call function 2 from library
+
+	ld	hl,(handle)
+	ld	b,TEST_USER
+	call	l_call
+	jp	c,error
+
+; Close library
+
+	ld	hl,(handle)
+	call	l_free
+	jp	c,error
+
+; Wait keypress
+
+	ld	c,30h
+	rst	10h
+
+error:
+
+; Exit from program
+
+	ld	bc,0041h 
+	rst	10h      
+
+handle	dw	0
+msg	db	"DLL test",13,10,0
+msg2	db	" loaded!",13,10,0
+buf	ds	32
+filenam db	"test.dll",0
+filena2 db	"test2.dll",0
+
+	include "libman.a"
