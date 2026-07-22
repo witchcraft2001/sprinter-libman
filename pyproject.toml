@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sprinter-mkdll"
+version = "0.1.0"
+description = "Cross-platform DLL builder and inspector for Sprinter libman"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Sprinter community"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Build Tools",
+]
+
+[project.optional-dependencies]
+standalone = ["pyinstaller>=6"]
+
+[project.scripts]
+sprinter-mkdll = "sprinter_mkdll.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

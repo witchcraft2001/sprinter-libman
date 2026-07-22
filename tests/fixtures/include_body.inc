@@ -1,0 +1,3 @@
+        jp start
+start:
+        ret
