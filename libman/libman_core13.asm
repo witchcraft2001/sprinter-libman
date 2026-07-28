@@ -77,6 +77,7 @@ _L_LOAD:
 	ld	(ll_file_open),a
 	ld	(ll_entry_active),a
 	ld	(ll_final_new),a
+	ld	(llzero+1),a		; do not inherit a partial zero-RLE run
 	ld	a,true
 	ld	(ll_fr+1),a		; флаг релокации
 	ld	(ll_fc+1),a		; флаг компрессии
@@ -192,26 +193,18 @@ ll0:	ld      c,13h
 loop:	ld      bc,16			; размер "порции"
 	push    de
 	ld      de,llbuf		; исп. буфер первых 16-ти байт заголовка
-	; аксель
-	di
-	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,16			; размер буфера
-	ld      b,b			; выкл. аксель
-	ld      l,l			; копир. блока
-	ld      a,(hl)			;
-	ld      (de),a			;
-	ld      b,b			; выкл. аксель
-	ei
-	add     hl,bc
+	; The accelerator pseudo-instruction sequence is not reliable while WIN3
+	; is repeatedly remapped by DSS.  Deterministic 16-byte LDIR copies keep
+	; the temporary DLL image intact on real Sprinter hardware.
+	ldir
 	push    hl
-	push    bc
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      bc,013Bh		; подкл. 2-ю страницу блока в 3-е окно
 	rst     10h
-	pop     bc
 	pop     hl
 	pop     de
 	jp      c,llerr_after_path	; ошибка подкл.
+	ld      bc,16
 	push    hl
 	ld      hl,llbuf		; буфер первых 16-ти байт заголовка
 ll_fc:	ld	a,true			; флаг компрессии
@@ -224,19 +217,9 @@ ll_fc:	ld	a,true			; флаг компрессии
 	ld      a,e
 	cp      10h			; размер блока
 	jr      nc,ll2
-	; аксель
-ll1z:	di
-	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,16			; размер буфера
-	ld      b,b			; выкл. аксель
-	ld      l,l			; копир. блока
-	ld      a,(hl)			;
-	ld      (de),a			;
-	ld      b,b			; выкл. аксель
-	ei
-	ex      de,hl
-	add     hl,bc			; de+ for simple copy
-	ex      de,hl
+	; See the LDIR note in the input copy above.
+ll1z:	ld      bc,16
+	ldir
 	jr      ll3
 ;-
 ll2:	ld	b,c			; b=16
@@ -314,16 +297,11 @@ ll4a:	ld      (llsize),hl		; размер библы (код)
 	ld      bc,003Bh		; подкл. 1-ю страницу в 3-е окно
 	rst     10h
 	jp	c,llerr_after_path
-	; аксель
 	ld      hl,0C000h
-	di
-	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,0			; блок 256 байт
-	ld      b,b			; выкл. аксель
-	ld      c,c			; заполнение блока
-	ld      (hl),a			;
-	ld      b,b			; выкл. аксель
-	ei
+	ld      de,0C001h
+	ld      bc,255
+	ld      (hl),0
+	ldir
 	ld      hl,lib_table		; таблица библ
 	ld      b,max_count		; макс. число загр. библиотек
 ll5:	ld      a,(hl)
@@ -439,16 +417,8 @@ nofix:	ld      de,(llsize)		; длина кода (размер библы)
 	ld      e,0
 ll10:	push    de
 	ld      de,llbuf		; буфер первых 16-ти байт заголовка
-	; аксель
-	di
-	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,16			; размер буфера
-	ld      b,b			; выкл. аксель
-	ld      l,l			; копир. блока
-	ld      a,(hl)			;
-	ld      (de),a			;
-	ld      b,b			; выкл. аксель
-	ei
+	ld      bc,16
+	ldir
 	pop     de
 	push    hl
 	push	de
@@ -458,16 +428,8 @@ ll10:	push    de
 	pop	de
 	jp	c,llcopy_map_final_error
 	ld      hl,llbuf		; буфер первых 16-ти байт заголовка
-	; аксель
-	di
-	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,16			; размер буфера
-	ld      b,b			; выкл. аксель
-	ld      l,l			; копир. блока
-	ld      a,(hl)			;
-	ld      (de),a			;
-	ld      b,b			; выкл. аксель
-	ei
+	ld      bc,16
+	ldir
 	push	de
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      bc,013Bh		; подкл. 2-ю страницу в 3-е окно
@@ -475,11 +437,6 @@ ll10:	push    de
 	pop	de
 	pop     hl
 	jp	c,llerr_with_entry
-	ld      bc,16			; размер буфера
-	add     hl,bc
-	ex      de,hl
-	add     hl,bc
-	ex      de,hl
 	ld      a,(ix+3)
 	or      0C0h
 	cp      d
@@ -743,9 +700,27 @@ lc2:	cp      0C0h
 	in      a,(0E2h)
 lc3:	ld      (lc4_+1),a
 	pop     af			; дескр. блока памяти (из +1)
-	ld      bc,0038h		; подкл. окно
+	; Estex-DSS generic SETWIN derives the wrong port for WIN1.  Select the
+	; explicit API entry point and preserve public IX/IY arguments around it.
+	push	ix
+	push	iy
+	ld	b,0
+	bit	7,h
+	jr	z,lc_map_win1
+	bit	6,h
+	jr	z,lc_map_win2
+	ld	c,3Bh
+	jr	lc_map
+lc_map_win1:
+	ld	c,39h
+	jr	lc_map
+lc_map_win2:
+	ld	c,3Ah
+lc_map:
 	rst     10h
-	jp	c,lc_er2
+	jr	c,lc_setwin_error
+	pop	iy
+	pop	ix
 	pop     af
 	pop     bc
 	pop     de
@@ -794,6 +769,10 @@ lc3_:	ld	a,(lcflag)
 	ld	a,c			; восст."a"
 	ret
 	;
+lc_setwin_error:
+	pop	iy
+	pop	ix
+	jr	lc_er2
 lc_er3:	pop     af
 lc_er2:	pop     af
 	pop     bc
@@ -818,8 +797,8 @@ _L_INFO:
 	push    de
 	push    bc
 	ld      a,l
-	rla
-	rla
+	add	a,a
+	add	a,a
 	ld	l,a
 	ld      bc,lib_table		; таблица библ
 	add     hl,bc
@@ -836,11 +815,13 @@ _L_INFO:
 	ld      l,0
 	in      a,(0E2h)
 	ld      (lioldw+1),a
+	push	hl
 	push	de
 	ld      a,b			; дескр. страницы библы
 	ld      bc,003Bh		; подкл. в 3-е окно
 	rst     10h
 	pop	de
+	pop	hl
 	jr	c,li_map_error
 	ld      bc,32			; длина info
 	ldir
