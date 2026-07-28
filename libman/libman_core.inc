@@ -15,6 +15,17 @@
 
         MODULE  LIBMAN
 
+LS_NONE         EQU     0
+LS_TEMP_ALLOC   EQU     1
+LS_TEMP_MAP     EQU     2
+LS_OPEN         EQU     3
+LS_IO           EQU     4
+LS_FORMAT       EQU     5
+LS_COPY         EQU     6
+LS_TARGET       EQU     7
+LS_INIT         EQU     8
+LS_CLEANUP      EQU     9
+
         DEFINE  LIBMAN_LOADER_ONLY
         INCLUDE "libman_core13.asm"
         UNDEFINE LIBMAN_LOADER_ONLY

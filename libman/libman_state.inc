@@ -46,12 +46,18 @@ APPINFO_EXE_DIR EQU     1
 ; Public API
 ; ---------------------------------------------------------------------------
 l_load:
-        ld      (ll_window),a
-        xor     a
+        push    af
+        ld      a,LR_LOAD
         ld      (l_reason),a
+        xor     a
         ld      (l_dss_error),a
+        IFDEF   LIBMAN_DIAGNOSTICS
+        ld      (l_load_stage),a
+        ld      (l_init_status),a
+        ld      (ll_load_stage_active),a
+        ENDIF
+        pop     af
 
-        ld      a,(ll_window)
         cp      1
         jr      c,ll_window_error
         cp      4
@@ -61,16 +67,15 @@ l_load:
         jr      z,ll_window_error
         ENDIF
 
-        call    ll_select_path
-        jr      c,ll_open_error
-        ld      a,(ll_window)
         call    coreload
-        ret     nc
+        ret     c
         push    af
-        ld      a,LR_LOAD
+        xor     a
         ld      (l_reason),a
+        IFDEF   LIBMAN_DIAGNOSTICS
+        ld      (l_load_stage),a
+        ENDIF
         pop     af
-        scf
         ret
 
 ll_window_error:
@@ -80,35 +85,19 @@ ll_window_error:
         scf
         ret
 
-ll_open_error:
-        ld      (l_dss_error),a
-        ld      a,LR_OPEN
-        ld      (l_reason),a
-        ld      a,-1
-        scf
-        ret
-
-l_free:
-        jp      corefree
-
-l_call:
-        jp      corecall
-
-l_info:
-        jp      coreinfo
+l_free          EQU     corefree
+l_call          EQU     corecall
+l_info          EQU     coreinfo
 
 ; ---------------------------------------------------------------------------
 ; Path selection
 ; ---------------------------------------------------------------------------
-; Every filename passed to the loader is staged in ll_path.  This is required
-; when the caller's original string lives in WIN0 and DSS temporarily replaces
-; that window.
+; A bare name may be expanded into ll_path after the scratch page is mapped.
+; Before DSS OPEN every selected name is staged there, so a caller string in
+; WIN0 remains valid even if DSS temporarily changes that window.
 ;
-; Out: HL=staged path and CF=0, or A=DSS/path error and CF=1.
+; Out: A=open file handle and CF=0, or A=DSS/path error and CF=1.
 ll_select_path:
-        push    de
-        push    ix
-        push    iy
         ld      (ll_original_path),hl
 
         IFNDEF  LIBMAN_NO_EXE_DIR
@@ -148,13 +137,8 @@ ll_dir_nonempty:
         jr      z,ll_append_name
         cp      '/'
         jr      z,ll_append_name
-        ld      a,b
-        or      a
-        jr      nz,ll_add_separator
-        ld      a,c
-        cp      2
-        jr      c,ll_try_original
-ll_add_separator:
+        ; ll_find_end guarantees room for the current NUL.  Reuse that byte
+        ; for the separator; ll_copy_bounded validates the remaining name.
         ld      (hl),'\'
         inc     hl
         dec     bc
@@ -165,38 +149,24 @@ ll_append_name:
         call    ll_copy_bounded
         jr      c,ll_try_original
         ld      hl,ll_path
-        call    ll_probe
-        jr      nc,ll_select_done
+        call    ll_open_selected
+        ret     nc
         ENDIF
 
 ll_try_original:
+        xor     a
+        ld      (l_dss_error),a
         ld      hl,(ll_original_path)
         ld      de,ll_path
         ld      bc,LIBMAN_PATH_CAPACITY
         call    ll_copy_bounded
-        jr      c,ll_select_fail
+        ret     c
         ld      hl,ll_path
-        call    ll_probe
-        jr      c,ll_select_fail
-
-ll_select_done:
-        pop     iy
-        pop     ix
-        pop     de
-        or      a
-        ret
-
-ll_select_fail:
-        pop     iy
-        pop     ix
-        pop     de
-        scf
-        ret
+        jp      ll_open_selected
 
 ; CF=0 only for a simple DOS 8.3 name (up to twelve characters plus NUL).
 ; Any path separator or drive colon makes the input an explicit path.
 ll_is_bare_dll_name:
-        push    hl
         ld      b,13
 ll_bare_loop:
         ld      a,(hl)
@@ -211,11 +181,9 @@ ll_bare_loop:
         inc     hl
         djnz    ll_bare_loop
 ll_bare_no:
-        pop     hl
         scf
         ret
 ll_bare_yes:
-        pop     hl
         or      a
         ret
 
@@ -235,77 +203,101 @@ ll_copy_bounded:
 
 ; Locate NUL in at most BC bytes.  Returns HL=NUL and BC=remaining capacity.
 ll_find_end:
-        ld      a,b
-        or      c
-        jr      z,ll_path_overflow
-        ld      a,(hl)
-        or      a
-        ret     z
-        inc     hl
-        dec     bc
-        jr      ll_find_end
+        xor     a
+        cpir
+        jr      nz,ll_path_overflow
+        dec     hl
+        inc     bc
+        ret
 
 ll_path_overflow:
         ld      a,-1
         scf
         ret
 
-; Probe first so a missing file never allocates loader scratch pages.
-ll_probe:
-        ld      (ll_selected_path),hl
+; Open the selected candidate.  Scratch pages are already allocated/mapped,
+; so keep the successful handle instead of probing and reopening the file.
+ll_open_selected:
         ld      a,1
         ld      c,DSS_OPEN
         rst     10h
-        ret     c
-        ld      c,DSS_CLOSE
-        rst     10h
-        ret     c
-        ld      hl,(ll_selected_path)
-        or      a
+        ret     nc
+        ld      (l_dss_error),a
         ret
+
+; Preserve the first primary loader failure before cleanup can call DSS again.
+; The helper is entered only with CF=1 immediately after the failing RST.
+ll_record_dss_error:
+        IFDEF   LIBMAN_DIAGNOSTICS
+        push    af
+        ld      a,(l_load_stage)
+        or      a
+        jr      nz,ll_record_dss_done
+        pop     af
+        push    af
+        ld      (l_dss_error),a
+        ld      a,(ll_load_stage_active)
+        ld      (l_load_stage),a
+ll_record_dss_done:
+        pop     af
+        scf
+        ret
+        ELSE
+        ld      (l_dss_error),a
+        ret
+        ENDIF
+
+        IFDEF   LIBMAN_DIAGNOSTICS
+; Record a loader-internal error (size, format, table capacity, relocation).
+; A DSS or INIT failure recorded at the exact call site always has priority.
+ll_record_loader_stage:
+        ld      a,(l_load_stage)
+        or      a
+        ret     nz
+        ld      a,(ll_load_stage_active)
+        ld      (l_load_stage),a
+        ret
+
+; corecall keeps dispatcher DSS failures separate from a DLL INIT rejection.
+; Preserve AF/CF because the legacy loader returns the INIT result unchanged.
+ll_record_init_failure:
+        push    af
+        ld      a,LS_INIT
+        ld      (l_load_stage),a
+        ld      a,(lcflag)
+        cp      1
+        jr      z,ll_record_init_dss_prepare
+        pop     af
+        push    af
+        ld      (l_init_status),a
+        jr      ll_record_init_done
+ll_record_init_dss_prepare:
+        ld      a,(lc_dss_error)
+        ld      (l_dss_error),a
+ll_record_init_done:
+        pop     af
+        scf
+        ret
+        ENDIF
 
 ; ---------------------------------------------------------------------------
 ; Cleanup called by the WIN0 loader
 ; ---------------------------------------------------------------------------
 ll_close_file:
-        ld      a,(ll_file_open)
-        or      a
-        ret     z
         ld      a,(llhand)
         ld      c,DSS_CLOSE
         rst     10h
-        ret     c
-        xor     a
-        ld      (ll_file_open),a
-        ret
-
-; Undo a table entry created before the DLL init routine is called.
-ll_drop_entry:
-        ld      a,(ll_entry_active)
-        or      a
-        ret     z
-        ld      ix,(ll_entry_ptr)
-        xor     a
-        ld      (ix+0),a
-        ld      (ll_entry_active),a
-        ld      a,(ll_final_new)
-        or      a
-        ret     z
-        ld      a,(ll_final_id)
-        ld      c,3Eh
-        rst     10h
-        ret     c
-        xor     a
-        ld      (ll_final_new),a
         ret
 
 ; Best-effort cleanup on every loader error and restoration of WIN3.
 ll_cleanup_partial:
         call    ll_close_file
+ll_cleanup_no_file:
         ld      a,(ll_final_new)
         or      a
         jr      z,ll_cleanup_scratch
-        ld      a,(ll_final_id)
+        ld      ix,(ll_entry_ptr)
+        ld      a,(ix+1)
         ld      c,3Eh
         rst     10h
         jr      c,ll_cleanup_scratch
@@ -351,33 +343,68 @@ lcflag:
 
 l_reason:
         db      LR_NONE
+        IFDEF   LIBMAN_DIAGNOSTICS
+l_load_stage:
+        db      LS_NONE
+        ENDIF
 l_dss_error:
         db      0
-ll_window:
+        IFDEF   LIBMAN_DIAGNOSTICS
+l_init_status:
         db      0
+        ELSE
+; Detailed diagnostics are release-optional.  Keep both public symbols as a
+; shared read-only zero byte in compact builds.
+l_load_stage:
+l_init_status:
+        db      0
+        ENDIF
+; Union: the original filename is no longer needed once a target table entry
+; is selected.  ll_final_new can become nonzero only after ll_entry_ptr is set.
 ll_original_path:
+ll_entry_ptr:
         dw      0
-ll_selected_path:
-        dw      0
+        IFDEF   LIBMAN_DIAGNOSTICS
+ll_load_stage_active:
+        db      LS_NONE
+lc_dss_error:
+        db      0
+        ENDIF
 
 ll_tmp_owned:
         db      0
-ll_file_open:
-        db      0
-ll_entry_active:
-        db      0
 ll_final_new:
         db      0
-ll_final_id:
+
+        IFDEF   LIBMAN_CALL_TRACE
+l_trace_relocated:
+        ds      3
+l_trace_mapped:
+        ds      3
+l_trace_function:
         db      0
-ll_entry_ptr:
+l_trace_reloc_flag:
+        db      0
+l_trace_reloc_base:
+        db      0
+l_trace_bitmap_raw:
+        db      0
+l_trace_bitmap_staged:
+        db      0
+l_trace_bitmap:
+        db      0
+l_trace_load_size:
         dw      0
+l_trace_copy_source_end:
+        dw      0
+l_trace_copy_dest_end:
+        dw      0
+        ENDIF
 
         IFDEF   LIBMAN_PATH_BUFFER
 ll_path         EQU     LIBMAN_PATH_BUFFER
         ELSE
-ll_path:
-        ds      LIBMAN_PATH_CAPACITY
+ll_path         EQU     0C000h
         ENDIF
 
         ENDMODULE

@@ -3,7 +3,6 @@
         DEFINE  LIBMAN_WIN0
         DEFINE  LIBMAN_MAX_LIBS 8
         DEFINE  LIBMAN_APP_DIR app_exe_dir
-        DEFINE  LIBMAN_PATH_BUFFER dll_path_buffer
         DEFINE  LIBMAN_PATH_CAPACITY 272
 
         ; Current SprEd WIN0 ends at #3BA0 and must remain below #4000.
@@ -11,6 +10,7 @@
 win0_libman_start:
         include "../../libman/libman_core.inc"
 win0_libman_end:
+        ASSERT  win0_libman_end-win0_libman_start = 859
         ASSERT  win0_libman_end <= #4000
 
         ; Current SprEd WIN1 ends at #7453; its stack starts at #7FF0.
@@ -18,9 +18,8 @@ win0_libman_end:
 win1_libman_start:
         include "../../libman/libman_state.inc"
 app_exe_dir:
+        ASSERT  app_exe_dir-win1_libman_start = 644
         db      "C:\\SPRED\\",0
-dll_path_buffer:
-        ds      LIBMAN_PATH_CAPACITY
 win1_libman_end:
         ASSERT  win1_libman_end <= #7FF0
 

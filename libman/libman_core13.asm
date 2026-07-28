@@ -35,8 +35,7 @@ false	equ	0
 	ASSERT	LIBMAN_MAX_LIBS <= 64
 
 ; В split-режиме эта точка и _L_LOAD могут находиться в WIN0.
-coreload:
-	jp	_L_LOAD
+coreload equ	_L_LOAD
 
 
 ;==================================================================
@@ -74,43 +73,67 @@ _L_LOAD:
 	push    hl
 	xor	a
 	ld	(ll_tmp_owned),a
-	ld	(ll_file_open),a
-	ld	(ll_entry_active),a
 	ld	(ll_final_new),a
 	ld	a,true
 	ld	(ll_fr+1),a		; флаг релокации
 	ld	(ll_fc+1),a		; флаг компрессии
 	in      a,(0E2h)
 	ld      (lloldw+1),a		; сохр. начальную Page3
+	IFDEF	LIBMAN_TEST_LOAD_FAILURE_HOOK
+	; Test-only fault injection runs after the unwind state is initialized.
+	call	LIBMAN_TEST_LOAD_FAILURE_HOOK
+	jp	c,llerr_before_path
+	ENDIF
 	; выделить блок в 2 страницы
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_TEMP_ALLOC
+	ld	(ll_load_stage_active),a
+	ENDIF
 	ld      bc,023Dh
 	rst     10h
-	jp      c,llerr_before_path	; ошибка выделения
+	jp      c,llerr_dss_before_path	; ошибка выделения
 	ld      (llid),a		; дескр. выдел. блока памяти
 	ld	a,true
 	ld	(ll_tmp_owned),a
 	; сразу подготовить одну страницу
 	; под загрузку файла библы.
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_TEMP_MAP
+	ld	(ll_load_stage_active),a
+	ENDIF
 	ld      bc,003Bh		; подкл. 1-ю страницу блока в 3-е окно
 	ld	a,(llid)
 	rst     10h
-	jp      c,llerr_before_path	; ошибка подключения
+	jp      c,llerr_dss_before_path	; ошибка подключения
 	pop     hl
-	; открыть файл
-	ld      a,1			; на чтение
-	ld      c,11h
-	rst     10h
-	jp      c,llerr_after_path
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_OPEN
+	ld	(ll_load_stage_active),a
+	ENDIF
+	call	ll_select_path
+	jr	nc,ll_path_selected
+	ld	a,LR_OPEN
+	ld	(l_reason),a
+	jp	llerr_no_file_after_path
+ll_path_selected:
 	ld      (llhand),a		; дескр. открытой библы
-	ld	a,true
-	ld	(ll_file_open),a
 	; указатель в конец файла
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_IO
+	ld	(ll_load_stage_active),a
+	ENDIF
 	ld      hl,0
 	push	hl
 	pop	ix
+	; Ownership bookkeeping above clobbers A; MOVE_FP needs the open handle.
+	ld	a,(llhand)
 	ld      bc,0215h		; MOVE_FP
 	rst     10h
-	jp      c,llerr_after_path	; ошибка перемещения указателя
+	jp      c,llerr_dss_after_path	; ошибка перемещения указателя
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_FORMAT
+	ld	(ll_load_stage_active),a
+	ENDIF
 	ld      a,h
 	or      l
 	jp      nz,llerr_after_path	; слишком большой файл
@@ -124,14 +147,17 @@ _L_LOAD:
 	rst     10h
 	pop     hl
 	ld      (llsize),hl		; размер библы
-	jp      c,llerr_after_path	; ошибка перемещения указателя
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	(l_trace_load_size),hl
+	ENDIF
+	jp      c,llerr_dss_after_path	; ошибка перемещения указателя
 	; чтение файла
 	ld      c,13h
 	ld      de,16			; число чит. байт
 	ld      hl,llbuf		; буфер первых 16-ти байт заголовка
 	ld      a,(llhand)		; дескр. открытой библы
 	rst     10h
-	jp      c,llerr_after_path
+	jp      c,llerr_dss_after_path
 	; вернуться в начало файла
 	ld      hl,0
 	push	hl
@@ -139,8 +165,12 @@ _L_LOAD:
 	ld      a,(llhand)		; дескр. открытой библы
 	ld      bc,0015h		; MOVE_FP
 	rst     10h
-	jp      c,llerr_after_path	; ошибка перемещения указателя
+	jp      c,llerr_dss_after_path	; ошибка перемещения указателя
 	; берем данные из первых 16-ти байт заголовка
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_FORMAT
+	ld	(ll_load_stage_active),a
+	ENDIF
 	ld	ix,llbuf		; буфер первых 16-ти байт заголовка
 	ld	a,(ix+0)
 	cp	"L"
@@ -182,7 +212,15 @@ ll0:	ld      c,13h
 	ld      hl,0C000h		; буфер чтения
 	ld      a,(llhand)		; дескр. библы
 	rst     10h
-	jp      c,llerr_after_path	; ошибка чтения
+	jp      c,llerr_dss_after_path	; ошибка чтения
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,(0C104h)
+	ld	(l_trace_bitmap_raw),a
+	ENDIF
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_COPY
+	ld	(ll_load_stage_active),a
+	ENDIF
 	;
 	ld      hl,0C000h		; начало 0-й страницы
 	ld      d,h			; также для 1-й страницы
@@ -211,7 +249,7 @@ loop:	ld      bc,16			; размер "порции"
 	pop     bc
 	pop     hl
 	pop     de
-	jp      c,llerr_after_path	; ошибка подкл.
+	jp      c,llerr_dss_after_path	; ошибка подкл.
 	push    hl
 	ld      hl,llbuf		; буфер первых 16-ти байт заголовка
 ll_fc:	ld	a,true			; флаг компрессии
@@ -275,7 +313,7 @@ ll3:	push    de
 	rst     10h
 	pop     de
 	pop     hl			; hl=0C010h ?
-	jp	c,llerr_after_path	; ошибка подкл.
+	jp	c,llerr_dss_after_path	; ошибка подкл.
 	ld      a,(llsize+1)		; ст.байт размера библы
 	ld      b,a
 	ld      a,h
@@ -291,18 +329,24 @@ ll3:	push    de
 	;
 ll4:	xor     a			; false
 	ld      (llzero+1),a		; флаг последов. нулей
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	(l_trace_copy_source_end),hl
+	ld	(l_trace_copy_dest_end),de
+	ENDIF
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      bc,013Bh		; подкл. 2-ю страницу в 3-е окно
 	rst     10h
-	jp	c,llerr_after_path
+	jp	c,llerr_dss_after_path
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,(0C104h)
+	ld	(l_trace_bitmap_staged),a
+	ENDIF
 	ld      hl,0C004h		; +4 адрес начала рел-таблицы (заголовок)
 	ld      e,(hl)
 	inc     hl
 	ld      d,(hl)
 	inc     hl
 	ex      de,hl
-	push    hl
-	pop     iy			; начало рел-таблицы (для remake)
 	dec     hl
 ll_fr:	ld	a,true			; флаг релокации
 	or	a
@@ -313,7 +357,7 @@ ll4a:	ld      (llsize),hl		; размер библы (код)
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      bc,003Bh		; подкл. 1-ю страницу в 3-е окно
 	rst     10h
-	jp	c,llerr_after_path
+	jp	c,llerr_dss_after_path
 	; аксель
 	ld      hl,0C000h
 	di
@@ -348,6 +392,10 @@ ll5c:	inc     hl
 	djnz	ll5
 	ld      hl,lib_table		; таблица библ
 	ld      b,max_count		; макс. число загр. библиотек
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_TARGET
+	ld	(ll_load_stage_active),a
+	ENDIF
 ll5b:	ld      a,(hl)
 	or      a
 	jr      z,ll6
@@ -375,8 +423,7 @@ ll7a:	inc     hl
 	; выделить блок в 1-ну страницу
 	ld      bc,013Dh
 	rst     10h
-	jp      c,llerr_after_path	; ошибка выделения
-	ld	(ll_final_id),a
+	jp      c,llerr_dss_after_path	; ошибка выделения
 	ld      l,a
 	ld	a,true
 	ld	(ll_final_new),a
@@ -390,7 +437,8 @@ ll8:	ld      d,a
 	cp      40h			; (40)00
 	jr      nc,ll7a
 ll8c:	ld      e,a
-	ld	a,(ll_window)
+	pop	af			; целевое окно из входного стека
+	push	af
 	; A = окно (1,2,3)
 	dec	a			; a=1 ?
 	jr      nz,ll8a
@@ -411,17 +459,24 @@ ll9:	ld	c,a
 	ld      (ix+1),l		; дескр. страницы библы
 	ld      (ix+2),d		; ст.байт адреса начала библы
 	ld      (ix+3),e		; ст.байт адреса конца библы
-	ld	a,true
-	ld	(ll_entry_active),a
 	push	de
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      bc,013Bh		; подкл. 2-ю страницу в 3-е окно
 	rst     10h
 	pop	bc			; новый адрес кода
-	jp	c,llerr_with_entry
+	jp	c,llerr_dss_with_entry
+	; Estex-DSS may clobber IY.  Rebuild the relocation-table pointer from
+	; the now-mapped canonical header immediately before remake instead of
+	; carrying IY across allocation/mapping DSS calls.
+	ld	hl,0C004h
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	push	de
+	pop	iy
 	ld	de,0C000h
 	add     iy,de			; начало рел-таблицы + 0C000h
-	ex	de,hl			; hl=0C000h адрес исх. кода
+	ld	hl,0C000h		; адрес исходного кода
 l1_form:ld	a,true			; флаг формата библы
 	or	a
 	jr	z,nofix			; "L0" формат
@@ -430,8 +485,27 @@ l1_form:ld	a,true			; флаг формата библы
 	add	hl,de			; скоррект. начало исх. кода
 nofix:	ld      de,(llsize)		; длина кода (размер библы)
 	ld	a,(ll_fr+1)		; флаг релокации
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	(l_trace_reloc_flag),a
+	ld	a,b
+	ld	(l_trace_reloc_base),a
+	ld	a,(iy+4)
+	ld	(l_trace_bitmap),a
+	ld	a,(ll_fr+1)
+	ENDIF
 	or	a
 	call	nz,remake		; настроить переходы
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	hl,0C020h
+	ld	a,(hl)
+	ld	(l_trace_relocated+0),a
+	inc	hl
+	ld	a,(hl)
+	ld	(l_trace_relocated+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(l_trace_relocated+2),a
+	ENDIF
 	ld      hl,0C000h
 	ld      a,(ix+2)
 	or      0C0h
@@ -474,7 +548,7 @@ ll10:	push    de
 	rst     10h
 	pop	de
 	pop     hl
-	jp	c,llerr_with_entry
+	jp	c,llerr_dss_with_entry
 	ld      bc,16			; размер буфера
 	add     hl,bc
 	ex      de,hl
@@ -487,11 +561,15 @@ ll10:	push    de
 	ld      a,(ix+1)		; дескр. блока из 2-х страниц
 	ld      bc,003Bh		; подкл. 1-ю страницу в 3-е окно
 	rst     10h
-	jp	c,llerr_with_entry
+	jp	c,llerr_dss_with_entry
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_CLEANUP
+	ld	(ll_load_stage_active),a
+	ENDIF
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      c,3Eh			; освободить блок памяти
 	rst     10h
-	jp	c,llerr_with_entry	; ошибка освобождения
+	jp	c,llerr_dss_with_entry	; ошибка освобождения
 	xor	a
 	ld	(ll_tmp_owned),a
 	ld	hl,(ll_entry_ptr)
@@ -504,21 +582,28 @@ ll10:	push    de
 	ld      l,a			; номер дескр. загр. библы
 	ld      h,0
 	ld      b,h			; 0-й номер функции
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_INIT
+	ld	(ll_load_stage_active),a
+	ENDIF
 lloldw:	ld      a,-1			; сохр. начальная Page3
 	out     (0E2h),a		; восст. страницу
 	call    corecall		; иниц. (загрузить) библу
+	IFDEF	LIBMAN_DIAGNOSTICS
+	call	c,ll_record_init_failure
+	ENDIF
 	push	af
 	push	hl
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_CLEANUP
+	ld	(ll_load_stage_active),a
+	ENDIF
 	call	ll_close_file
+	call	c,ll_record_dss_error
 	jr	c,ll_close_error
 	pop	hl
 	pop	af
 	jr	c,ll_init_error
-	push	af
-	xor	a
-	ld	(ll_entry_active),a
-	ld	(ll_final_new),a
-	pop	af
 	pop	bc			; удалить сохраненное целевое окно
 	pop	de
 	pop	iy
@@ -532,9 +617,8 @@ ll_init_error:
 	xor	a
 	ld	(ll_final_new),a
 ll_init_free_error:
-	xor	a
-	ld	(ll_entry_active),a
-	call	ll_cleanup_partial
+	call	ll_clear_entry
+	call	ll_cleanup_no_file
 	pop	af
 	pop	bc			; удалить сохраненное целевое окно
 	pop	de
@@ -544,7 +628,7 @@ ll_init_free_error:
 
 llcopy_map_final_error:
 	pop	hl			; снять сохраненный адрес источника
-	jr	llerr_with_entry
+	jr	llerr_dss_with_entry
 
 ll_close_error:
 	pop	hl			; handle
@@ -554,19 +638,41 @@ ll_close_error:
 	xor	a
 	ld	(ll_final_new),a
 ll_close_free_error:
-	xor	a
-	ld	(ll_entry_active),a
+	call	ll_clear_entry
 	call	ll_cleanup_partial
 	jr	llerr_return
 
+llerr_dss_with_entry:
+	call	ll_record_dss_error
 llerr_with_entry:
-	call	ll_drop_entry
+	call	ll_clear_entry
 	jr	llerr_after_path
 
+ll_clear_entry:
+	ld	ix,(ll_entry_ptr)
+	xor	a
+	ld	(ix+0),a
+	ret
+
+llerr_dss_before_path:
+	call	ll_record_dss_error
+	jr	llerr_before_path
 llerr_before_path:
 	pop	hl			; имя еще находилось в стеке
+	jr	llerr_no_file_after_path
+llerr_dss_after_path:
+	call	ll_record_dss_error
 llerr_after_path:
+	IFDEF	LIBMAN_DIAGNOSTICS
+	call	ll_record_loader_stage
+	ENDIF
 	call	ll_cleanup_partial
+	jr	llerr_return
+llerr_no_file_after_path:
+	IFDEF	LIBMAN_DIAGNOSTICS
+	call	ll_record_loader_stage
+	ENDIF
+	call	ll_cleanup_no_file
 llerr_return:
 	pop	bc			; удалить сохраненное целевое окно
 	pop	de
@@ -581,14 +687,9 @@ llerr_return:
 
 	IFNDEF	LIBMAN_LOADER_ONLY
 
-corefree:
-	jp	_L_FREE
-
-corecall:
-	jp	_L_CALL
-
-coreinfo:
-	jp	_L_INFO
+corefree equ	_L_FREE
+corecall equ	_L_CALL
+coreinfo equ	_L_INFO
 
 
 
@@ -659,6 +760,7 @@ _L_FREE:
 	ld      b,max_count		; макс. число загр. библиотек
 	ld      e,0
 lf1:	ld      a,(hl)
+	or	a			; LD не обновляет Z: проверить флаг занятости явно
 	jr      z,lf2
 	inc     hl
 	ld      a,(hl)
@@ -710,8 +812,8 @@ _L_CALL:
 	ld	a,b			; номер функции
 	ld	(lc_fun),a
 	ld      a,l			; дескр. библы
-	rla				; 0-й бит на место 2-го
-	rla				; восст. адрес ячейки в таблице библ
+	add	a,a			; handle * 4, независимо от входного CF
+	add	a,a
 	ld      l,a
 	ld      de,lib_table		; таблица библ
 	add     hl,de			; перейти на адрес элемента таблицы
@@ -739,13 +841,56 @@ lc1:	cp      80h
 	jr      lc3
 	;
 lc2:	cp      0C0h
+	IFDEF	LIBMAN_CALL_TRACE
+	jp      nz,lc_er3
+	ELSE
 	jr      nz,lc_er3
+	ENDIF
 	in      a,(0E2h)
 lc3:	ld      (lc4_+1),a
+	; Generic DSS SETWIN (#38) is broken in current Estex-DSS for WIN1:
+	; select SETWIN1/2/3 (#39..#3B) from the window bits in H.
+	ld	a,h
+	rlca
+	rlca
+	and	3
+	add	a,38h
+	ld	c,a
+	ld	b,0			; первая страница блока DLL
 	pop     af			; дескр. блока памяти (из +1)
-	ld      bc,0038h		; подкл. окно
+	push	ix
+	push	iy
 	rst     10h
-	jp	c,lc_er2
+	jr	nc,lc_setwin_ok
+	IFDEF	LIBMAN_DIAGNOSTICS
+	push	af
+	ld	(lc_dss_error),a
+	ld	a,true
+	ld	(lcflag),a
+	pop	af
+	ENDIF
+	pop	iy
+	pop	ix
+	jr	lc_er2
+lc_setwin_ok:
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,(lc_fun)
+	or	a
+	jr	nz,lc_trace_done
+	ld	(l_trace_function),a
+	ld	hl,(lcstart)
+	ld	a,(hl)
+	ld	(l_trace_mapped+0),a
+	inc	hl
+	ld	a,(hl)
+	ld	(l_trace_mapped+1),a
+	inc	hl
+	ld	a,(hl)
+	ld	(l_trace_mapped+2),a
+lc_trace_done:
+	ENDIF
+	pop	iy
+	pop	ix
 	pop     af
 	pop     bc
 	pop     de
@@ -818,8 +963,8 @@ _L_INFO:
 	push    de
 	push    bc
 	ld      a,l
-	rla
-	rla
+	add	a,a			; handle * 4, независимо от входного CF
+	add	a,a
 	ld	l,a
 	ld      bc,lib_table		; таблица библ
 	add     hl,bc
@@ -836,11 +981,13 @@ _L_INFO:
 	ld      l,0
 	in      a,(0E2h)
 	ld      (lioldw+1),a
+	push	hl			; Estex-DSS SETWIN3 может менять HL/DE
 	push	de
 	ld      a,b			; дескр. страницы библы
 	ld      bc,003Bh		; подкл. в 3-е окно
 	rst     10h
 	pop	de
+	pop	hl
 	jr	c,li_map_error
 	ld      bc,32			; длина info
 	ldir

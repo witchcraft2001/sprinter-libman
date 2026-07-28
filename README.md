@@ -34,6 +34,11 @@ sprinter-mkdll inspect library.dll
 режиме DLL размещаются в WIN2 или WIN3; подробный контракт и настройки
 буферов описаны в [`libman/README.md`](libman/README.md).
 
+Для проверки менеджера на Sprinter/MAME используйте
+[`examples/libmantst`](examples/libmantst): тестовое приложение последовательно
+загружает тестовые L0/L1 и исторические `ANTONFNT.DLL`/`TEST.DLL` из `docs`,
+проверяет `l_info`, регистры вызова и `l_free`.
+
 По умолчанию `build` создаёт L1 для libman 1.3. Для старого исходника,
 предназначенного для исторического `mk_dll`, указывайте `--format l0 --target
 1.2`.

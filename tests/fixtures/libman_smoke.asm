@@ -18,8 +18,12 @@ dll_name:
 dll_handle:
         dw      0
 
+libman_start:
         include "../../libman/libman.asm"
         include "../../libman/libman13.asm" ; compatibility name + guard
+libman_end:
+
+        ASSERT  libman_end-libman_start = 1722
 
         ASSERT  l_load = LIBMAN.l_load
         ASSERT  l_free = LIBMAN.l_free
