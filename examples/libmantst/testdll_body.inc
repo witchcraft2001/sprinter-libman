@@ -32,6 +32,12 @@ dll_test:
 
 ; Verify that l_call delivered every documented argument register, then return
 ; deterministic values for the application to check.
+        ld      a,c
+        exx
+        cp      c                       ; C' carries the caller's expected page
+        exx
+        jr      nz,dll_test_failed
+
         ld      a,d
         cp      #12
         jr      nz,dll_test_failed

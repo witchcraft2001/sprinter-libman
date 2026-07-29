@@ -289,6 +289,10 @@ stage_next:
         ld      (DSS_MODE),a
         ld      ix,#1234
         ld      iy,#5678
+        in      a,(#a2)
+        exx
+        ld      c,a                     ; expected displaced page in C'
+        exx
         ld      hl,0
         ld      b,0
         ld      a,#8c
@@ -386,6 +390,11 @@ test_dll_table:
         jp      test_dll_init
         jp      test_dll_init
 test_dll_init:
+        ld      a,c
+        exx
+        cp      c
+        exx
+        jr      nz,test_dll_bad_args
         push    ix
         pop     hl
         ld      de,#1234

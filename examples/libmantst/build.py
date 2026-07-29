@@ -12,8 +12,8 @@ ROOT = EXAMPLE_DIR.parents[1]
 DOCS_DIR = ROOT / "docs"
 EXE_HEADER_SIZE = 0x200
 DLL_PAYLOAD = b"\xA5"
-LMTL0_FILE_SIZE = 0x085
-LMTL1_FILE_SIZE = 0x084
+LMTL0_FILE_SIZE = 0x08B
+LMTL1_FILE_SIZE = 0x08B
 sys.path.insert(0, str(ROOT / "src"))
 
 from sprinter_mkdll.cli import main as mkdll_main  # noqa: E402

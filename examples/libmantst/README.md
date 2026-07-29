@@ -38,11 +38,13 @@ All libman tests passed.
 For every DLL the program checks `l_load`, the L0/L1 signature and name returned
 by `l_info`, execution of `INIT`, and `l_free`. For `LMTL0.DLL` and
 `LMTL1.DLL` it additionally checks argument/result registers `A`, `DE`, `IX`,
-`IY` through function 2, including handle dispatch with caller CF set. Their
-`INIT` functions also read an appended one-byte payload through the file handle
-received in `A`, checking both the handle ABI and the file position.
+`IY` through function 2, including handle dispatch with caller CF set. It also
+checks that `C` contains the physical page displaced from WIN1 by that exact
+`l_call`. Their `INIT` functions also read an appended one-byte payload through
+the file handle received in `A`, checking both the handle ABI and the file
+position.
 `build.py` and the Python test also lock their expected file sizes
-(`0085h`/`0084h`) used by the on-target bundle check. `LMTL0.DLL` is compressed,
+(`008Bh`/`008Bh`) used by the on-target bundle check. `LMTL0.DLL` is compressed,
 so its payload check also guards against decoding past the declared prefix.
 Public functions in the
 historical DLLs are not called

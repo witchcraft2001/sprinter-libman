@@ -33,6 +33,20 @@ class LibmanIncludeTests(unittest.TestCase):
         self.assertIn("push\tix", dispatcher)
         self.assertIn("push\tiy", dispatcher)
 
+    def test_dispatcher_passes_displaced_physical_page_in_c(self) -> None:
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        dispatcher = source.split("_L_CALL:", 1)[1].split(
+            ";==================================================================\n;  Получить информацию",
+            1,
+        )[0]
+        call_gate = dispatcher.split("ld      bc,lc_", 1)[1].split(
+            "jp      (hl)", 1
+        )[0]
+        self.assertIn("push    bc", call_gate)
+        self.assertIn("ld\tbc,(lc4_+1)", call_gate)
+
     def test_free_checks_table_occupancy_and_releases_last_page(self) -> None:
         source = (ROOT / "libman" / "libman_core13.asm").read_text(
             encoding="utf-8"
@@ -74,6 +88,14 @@ class LibmanIncludeTests(unittest.TestCase):
             self.assertIn("\tdi\n", guarded)
             self.assertIn("\tld      d,d", guarded)
             self.assertGreaterEqual(guarded.count("\tld      b,b"), 2)
+            self.assertRegex(
+                guarded,
+                r"ld\s+d,d[^\n]*\n(?:[A-Za-z0-9_]+:\s*\n)?\s*ld\s+a,(?:0|16)",
+            )
+
+        self.assertNotIn("ld      d,d\n\tld      a,c", loader)
+        self.assertIn("ld\t(ll_copy_in_size+1),a", loader)
+        self.assertIn("ld\t(ll_copy_out_size+1),a", loader)
 
     def test_loader_records_dss_errors_at_shared_exit_gates(self) -> None:
         source = (ROOT / "libman" / "libman_core13.asm").read_text(
@@ -136,7 +158,9 @@ class LibmanIncludeTests(unittest.TestCase):
         self.assertIn("jr\tnz,ll_reloc_ready", reloc_flag)
         self.assertIn("or\tc", reloc_flag)
         self.assertIn("sbc\thl,bc", source_loop)
-        self.assertGreaterEqual(source_loop.count("ld      a,c"), 2)
+        self.assertIn("ld\ta,c", source_loop)
+        self.assertIn("ld\t(ll_copy_in_size+1),a", source_loop)
+        self.assertIn("ld\t(ll_copy_out_size+1),a", source_loop)
         self.assertNotIn("sub     0C0h", source_loop)
 
     def test_loader_bounds_decoded_image_and_resets_rle_state(self) -> None:

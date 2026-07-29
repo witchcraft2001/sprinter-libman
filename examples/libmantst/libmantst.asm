@@ -3,7 +3,8 @@
 ;
 ; Derived from docs/libman13/TEST.ASM and its L0/L1 LIB.ASM examples.
 ; The program runs from WIN2, loads each DLL into WIN1, checks l_info, calls
-; function 2 with A/DE/IX/IY arguments, validates its results and unloads it.
+; function 2 with A/DE/IX/IY arguments and the displaced page in C, validates
+; its results and unloads it.
 ; ============================================================================
 
         device  noslot64k
@@ -15,8 +16,8 @@ STACK_TOP               equ     #bff0
 DSS                     equ     #10
 DSS_EXIT                equ     #41
 DSS_PCHARS              equ     #5c
-LMTL0_FILE_SIZE         equ     #0085
-LMTL1_FILE_SIZE         equ     #0084
+LMTL0_FILE_SIZE         equ     #008b
+LMTL1_FILE_SIZE         equ     #008b
 
         define  LIBMAN_MAX_LIBS 1
         define  LIBMAN_NO_LEGACY_API
@@ -210,6 +211,10 @@ test_library:
         or      a
         jp      z,test_library_free
 
+        in      a,(#a2)
+        exx
+        ld      c,a                     ; expected displaced WIN1 page in C'
+        exx
         ld      a,#a5
         ld      de,#1234
         ld      ix,#5678

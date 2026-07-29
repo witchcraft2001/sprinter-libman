@@ -282,12 +282,18 @@ loop:	ld	bc,16
 	jr	nc,ll_chunk_ready
 	ld	c,a
 ll_chunk_ready:
+	; SET_BUFFER samples only the immediate operand of the following LD A,n.
+	; Patch both accelerator copies before selecting the command.
+	ld	a,c
+	ld	(ll_copy_in_size+1),a
+	ld	(ll_copy_out_size+1),a
 	push    de
 	ld      de,llbuf		; исп. буфер первых 16-ти байт заголовка
 	; аксель
 	di
 	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,c			; размер буфера
+ll_copy_in_size:
+	ld      a,16			; размер буфера (self-modified for the final chunk)
 	ld      b,b			; выкл. аксель
 	ld      l,l			; копир. блока
 	ld      a,(hl)			;
@@ -324,7 +330,8 @@ ll_fc:	ld	a,true			; флаг компрессии
 	; аксель
 ll1z:	di
 	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,c			; размер буфера
+ll_copy_out_size:
+	ld      a,16			; размер буфера (self-modified for the final chunk)
 	ld      b,b			; выкл. аксель
 	ld      l,l			; копир. блока
 	ld      a,(hl)			;
@@ -876,6 +883,7 @@ lf_ee:	pop	bc
 ;  Вызов процедур библиотеки на исполнение
 ;==================================================================
 ; Передаваемые параметры в: a,de,ix,iy and alt. regs
+; C = физическая страница, вытесненная DLL из целевого окна
 ;
 ;    ld      hl,(handle)  ;дескр. библы
 ;    ld      b,function   ;номер функции
@@ -978,7 +986,7 @@ lc_trace_done:
 	pop     de
 	; возможные передаваемые
 	; аргументы функции:
-	; a,de,ix,iy and alt. regs
+	; a,de,ix,iy and alt. regs; c=предыдущая физическая страница окна
 	ld      hl,(lcstart)		; начало кода библы в окне
 	ld      c,b			; номер передаваемой функции
 	ld      b,0
@@ -987,6 +995,7 @@ lc_trace_done:
 	add     hl,bc			;3+1=4
 	ld      bc,lc_
 	push    bc			; в стек точку возврата
+	ld	bc,(lc4_+1)		; c=страница окна до подключения DLL; b не определен
 	jp      (hl)			; Вызов функции
 
 lc_:	pop     hl			; восст. вход. дескриптор (и баланс стека)
