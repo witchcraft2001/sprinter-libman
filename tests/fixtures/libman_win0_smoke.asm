@@ -10,7 +10,7 @@
 win0_libman_start:
         include "../../libman/libman_core.inc"
 win0_libman_end:
-        ASSERT  win0_libman_end-win0_libman_start = 859
+        ASSERT  win0_libman_end-win0_libman_start = 971
         ASSERT  win0_libman_end <= #4000
 
         ; Current SprEd WIN1 ends at #7453; its stack starts at #7FF0.

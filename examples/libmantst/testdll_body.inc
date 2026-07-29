@@ -7,7 +7,19 @@
         jp      dll_test
 
 dll_init:
+        ld      hl,dll_payload_byte
+        ld      de,1
+        ld      c,#13                   ; DSS READ, A is the INIT file handle
+        rst     #10
+        ret     c
+        ld      a,(dll_payload_byte)
+        cp      #a5
+        jr      nz,dll_init_failed
         xor     a
+        ret
+dll_init_failed:
+        ld      a,2
+        scf
         ret
 
 dll_fini:
@@ -51,3 +63,6 @@ dll_test_failed:
         ld      a,1
         or      a
         ret
+
+dll_payload_byte:
+        db      0

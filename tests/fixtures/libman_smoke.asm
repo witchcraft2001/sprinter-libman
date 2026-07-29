@@ -23,7 +23,7 @@ libman_start:
         include "../../libman/libman13.asm" ; compatibility name + guard
 libman_end:
 
-        ASSERT  libman_end-libman_start = 1722
+        ASSERT  libman_end-libman_start = 1834
 
         ASSERT  l_load = LIBMAN.l_load
         ASSERT  l_free = LIBMAN.l_free

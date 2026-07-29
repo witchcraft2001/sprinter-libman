@@ -15,7 +15,7 @@ python examples/libmantst/build.py
 The command creates:
 
 - `examples/libmantst/build/LMTEST.EXE`;
-- `examples/libmantst/build/LMTL0.DLL` (uncompressed L0);
+- `examples/libmantst/build/LMTL0.DLL` (compressed L0 with trailing payload);
 - `examples/libmantst/build/LMTL1.DLL` (uncompressed L1).
 - `examples/libmantst/build/ANTONFNT.DLL` (historical compressed L0);
 - `examples/libmantst/build/TEST.DLL` (historical compressed L0).
@@ -38,9 +38,13 @@ All libman tests passed.
 For every DLL the program checks `l_load`, the L0/L1 signature and name returned
 by `l_info`, execution of `INIT`, and `l_free`. For `LMTL0.DLL` and
 `LMTL1.DLL` it additionally checks argument/result registers `A`, `DE`, `IX`,
-`IY` through function 2, including handle dispatch with caller CF set.
+`IY` through function 2, including handle dispatch with caller CF set. Their
+`INIT` functions also read an appended one-byte payload through the file handle
+received in `A`, checking both the handle ABI and the file position.
 `build.py` and the Python test also lock their expected file sizes
-(`0120h`/`006Bh`) used by the on-target bundle check. Public functions in the
+(`0085h`/`0084h`) used by the on-target bundle check. `LMTL0.DLL` is compressed,
+so its payload check also guards against decoding past the declared prefix.
+Public functions in the
 historical DLLs are not called
 because `ANTONFNT.DLL` changes the video mode and draws to VRAM. On failure the
 program prints `l_reason`, `l_load_stage`, `l_dss_error`, and `l_init_status`.

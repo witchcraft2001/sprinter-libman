@@ -11,8 +11,9 @@ EXAMPLE_DIR = Path(__file__).resolve().parent
 ROOT = EXAMPLE_DIR.parents[1]
 DOCS_DIR = ROOT / "docs"
 EXE_HEADER_SIZE = 0x200
-LMTL0_FILE_SIZE = 0x120
-LMTL1_FILE_SIZE = 0x06B
+DLL_PAYLOAD = b"\xA5"
+LMTL0_FILE_SIZE = 0x085
+LMTL1_FILE_SIZE = 0x084
 sys.path.insert(0, str(ROOT / "src"))
 
 from sprinter_mkdll.cli import main as mkdll_main  # noqa: E402
@@ -56,6 +57,7 @@ def validate_dll(
     expected_format: LibraryFormat,
     expected_name: str,
     expected_size: int | None = None,
+    expected_payload: bytes | None = None,
 ) -> None:
     contents = path.read_bytes()
     if expected_size is not None and len(contents) != expected_size:
@@ -69,6 +71,8 @@ def validate_dll(
         raise SystemExit(f"{path.name}: unexpected library name")
     if not library.relocation_count:
         raise SystemExit(f"{path.name}: test DLL has no relocation entries")
+    if expected_payload is not None and library.trailing_data != expected_payload:
+        raise SystemExit(f"{path.name}: unexpected trailing payload")
 
 
 def copy_documented_dll(
@@ -108,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         "testdll_l0.asm",
         l0_path,
         LibraryFormat.L0,
-        compress=False,
+        compress=True,
         name="LIBMAN TEST L0",
     )
     build_dll(
@@ -118,17 +122,21 @@ def main(argv: list[str] | None = None) -> int:
         compress=False,
         name="LIBMAN TEST L1",
     )
+    for path in (l0_path, l1_path):
+        path.write_bytes(path.read_bytes() + DLL_PAYLOAD)
     validate_dll(
         l0_path,
         LibraryFormat.L0,
         "LIBMAN TEST L0",
         LMTL0_FILE_SIZE,
+        DLL_PAYLOAD,
     )
     validate_dll(
         l1_path,
         LibraryFormat.L1,
         "LIBMAN TEST L1",
         LMTL1_FILE_SIZE,
+        DLL_PAYLOAD,
     )
     copy_documented_dll(
         DOCS_DIR / "LIBSHAOS" / "ANTONFNT.DLL",

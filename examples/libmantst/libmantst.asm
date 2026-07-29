@@ -15,8 +15,8 @@ STACK_TOP               equ     #bff0
 DSS                     equ     #10
 DSS_EXIT                equ     #41
 DSS_PCHARS              equ     #5c
-LMTL0_FILE_SIZE         equ     #0120
-LMTL1_FILE_SIZE         equ     #006b
+LMTL0_FILE_SIZE         equ     #0085
+LMTL1_FILE_SIZE         equ     #0084
 
         define  LIBMAN_MAX_LIBS 1
         define  LIBMAN_NO_LEGACY_API

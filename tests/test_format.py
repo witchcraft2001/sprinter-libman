@@ -49,6 +49,13 @@ class FormatTests(unittest.TestCase):
         self.assertTrue(converted.endswith(b"EXTRA DATA"))
         self.assertEqual(decode_library(converted).trailing_data, b"EXTRA DATA")
 
+    def test_payload_can_extend_physical_file_past_64k(self) -> None:
+        original = (ROOT / "docs/libman/TEST.DLL").read_bytes()
+        payload = b"\xA5" * 0x10000
+        with_payload = original + payload
+        self.assertGreater(len(with_payload), 0xFFFF)
+        self.assertEqual(decode_library(with_payload).trailing_data, payload)
+
     def test_zero_rle_supports_a_256_byte_run(self) -> None:
         payload = b"header-prefix-16" + b"\0" * 256 + b"\x01" + b"\0" * 2
         self.assertEqual(len(payload[:16]), 16)

@@ -115,6 +115,57 @@ class LibmanIncludeTests(unittest.TestCase):
         first_seek = after_open.split("ld      bc,0215h", 1)[0]
         self.assertIn("ld\ta,(llhand)", first_seek)
 
+    def test_loader_passes_open_file_handle_to_init(self) -> None:
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        init = source.split("lloldw:", 1)[1].split("call    corecall", 1)[0]
+        self.assertIn("out     (0E2h),a", init)
+        self.assertIn("ld\ta,(llhand)", init)
+
+    def test_loader_stops_at_header_declared_prefix_not_physical_eof(self) -> None:
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        loader = source.split("_L_LOAD:", 1)[1].split(
+            "ENDIF\t\t\t\t; !LIBMAN_RUNTIME_ONLY", 1
+        )[0]
+        source_loop = loader.split("loop:", 1)[1].split("ll4:", 1)[0]
+        reloc_flag = loader.split("ll0r:", 1)[1].split("ll_reloc_ready:", 1)[0]
+        self.assertIn("ld\t(llsize),de", loader)
+        self.assertIn("jr\tnz,ll_reloc_ready", reloc_flag)
+        self.assertIn("or\tc", reloc_flag)
+        self.assertIn("sbc\thl,bc", source_loop)
+        self.assertGreaterEqual(source_loop.count("ld      a,c"), 2)
+        self.assertNotIn("sub     0C0h", source_loop)
+
+    def test_loader_bounds_decoded_image_and_resets_rle_state(self) -> None:
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        loader = source.split("_L_LOAD:", 1)[1].split(
+            "ENDIF\t\t\t\t; !LIBMAN_RUNTIME_ONLY", 1
+        )[0]
+        setup = loader.split("ld\ta,true", 1)[0]
+        decoder = loader.split("ll2:", 1)[1].split("ll3:", 1)[0]
+        completion = loader.split("jp\tnz,loop", 1)[1].split("ll4:", 1)[0]
+        self.assertIn("ld\t(llzero+1),a", setup)
+        self.assertIn("lloutend:", loader)
+        self.assertIn("jp\tz,ll_decode_error", decoder)
+        self.assertIn("jp\tnz,ll_decode_error", decoder)
+        self.assertIn("ld\ta,(llzero+1)", completion)
+        self.assertIn("jp\tnz,llerr_after_path", completion)
+
+    def test_loader_accepts_physical_payload_over_64k(self) -> None:
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        eof = source.split("ld      bc,0215h", 1)[1].split(
+            "ll_eof_size_ready:", 1
+        )[0]
+        self.assertIn("ld\tix,0FFFFh", eof)
+        self.assertNotIn("jp      nz,llerr_after_path", eof)
+
     @unittest.skipUnless(shutil.which("sjasmplus"), "sjasmplus is not installed")
     def test_exported_libman_assembles_with_sjasmplus(self) -> None:
         assembler = shutil.which("sjasmplus")

@@ -74,6 +74,7 @@ _L_LOAD:
 	xor	a
 	ld	(ll_tmp_owned),a
 	ld	(ll_final_new),a
+	ld	(llzero+1),a
 	ld	a,true
 	ld	(ll_fr+1),a		; флаг релокации
 	ld	(ll_fc+1),a		; флаг компрессии
@@ -136,7 +137,12 @@ ll_path_selected:
 	ENDIF
 	ld      a,h
 	or      l
-	jp      nz,llerr_after_path	; слишком большой файл
+	jr	z,ll_eof_size_ready
+	; llsize is used only to prove that the <=16 KiB prefix fits in the
+	; physical file.  Saturation is enough when the DSS 32-bit size exceeds
+	; 65535 bytes and avoids imposing that limit on a trailing payload.
+	ld	ix,0FFFFh
+ll_eof_size_ready:
 	push    ix			; размер файла, мл.разряд
 	; вернуть указатель в начало файла
 	ld      hl,0
@@ -190,8 +196,23 @@ ll0s:	ld	a,e
 	ld	h,(ix+5)
 	ld	c,(ix+6)		; размер рел-таблицы
 	ld	b,(ix+7)
+	; Validate the canonical output before decoding into the 16 KiB scratch
+	; page.  In particular, reject 16-bit addition overflow.
+	ld	a,l
+	sub	32
+	ld	a,h
+	sbc	a,0
+	jp	c,llerr_after_path
 	; библа сжата ? (de=hl ?)
 	add	hl,bc			; заголовок + код библы = размер библы
+	jp	c,llerr_after_path
+	ld	a,h
+	cp	40h
+	jr	c,ll_image_size_ok
+	sub	40h
+	or	l
+	jp	nz,llerr_after_path
+ll_image_size_ok:
 	ld	a,h
 	cp	d
 	jr	nz,ll0r			; сжата
@@ -202,12 +223,36 @@ ll0s:	ld	a,e
 	ld	(ll_fc+1),a		; сбр. флаг компрессии (библа не сжата)
 	; библа перемещаемая ?
 ll0r:	ld	a,b
-	cp	c
-	jr	nz,ll0			; да, рел-таблица не равна нулю
-	xor	a			; false
+	or	c
+	jr	nz,ll_reloc_ready	; да, рел-таблица не равна нулю
 	ld	(ll_fr+1),a		; сбр. флаг релокации
-	; прочитать всю библу в подгот. страницу
-	; de=размер библы
+ll_reloc_ready:
+	ld	a,h
+	add	a,0C0h
+	ld	h,a
+	ld	(lloutend+1),hl		; exact expected end of decoded image
+	; The prefix is the only portion libman loads.  Bytes physically after it
+	; are an optional library payload for INIT, so validate the prefix against
+	; the measured file length before reusing llsize as the remaining input.
+	ld	a,d
+	cp	40h
+	jr	c,ll_prefix_page_ok
+	sub	40h
+	or	e
+	jp	nz,llerr_after_path
+ll_prefix_page_ok:
+	ld	a,e
+	sub	16
+	ld	a,d
+	sbc	a,0
+	jp	c,llerr_after_path
+	ld	hl,(llsize)		; physical file size from MOVE_FP
+	or	a
+	sbc	hl,de
+	jp	c,llerr_after_path	; truncated prefix
+	ld	(llsize),de		; packed bytes remaining to copy/decode
+	; Read exactly the prefix; the file pointer is then at the trailing payload.
+	; de=loaded prefix size
 ll0:	ld      c,13h
 	ld      hl,0C000h		; буфер чтения
 	ld      a,(llhand)		; дескр. библы
@@ -227,13 +272,22 @@ ll0:	ld      c,13h
 	ld      e,l
 	; hl - упак. данные в 0-й странице
 	; de - распак. данные в 1-й странице
-loop:	ld      bc,16			; размер "порции"
+	; llsize - packed bytes remaining (the final chunk may be shorter than 16)
+loop:	ld	bc,16
+	ld	a,(llsize+1)
+	or	a
+	jr	nz,ll_chunk_ready
+	ld	a,(llsize)
+	cp	c
+	jr	nc,ll_chunk_ready
+	ld	c,a
+ll_chunk_ready:
 	push    de
 	ld      de,llbuf		; исп. буфер первых 16-ти байт заголовка
 	; аксель
 	di
 	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,16			; размер буфера
+	ld      a,c			; размер буфера
 	ld      b,b			; выкл. аксель
 	ld      l,l			; копир. блока
 	ld      a,(hl)			;
@@ -242,6 +296,11 @@ loop:	ld      bc,16			; размер "порции"
 	ei
 	add     hl,bc
 	push    hl
+	; The source pointer is saved, so HL is free for the remaining byte count.
+	ld	hl,(llsize)
+	or	a
+	sbc	hl,bc
+	ld	(llsize),hl
 	push    bc
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      bc,013Bh		; подкл. 2-ю страницу блока в 3-е окно
@@ -265,7 +324,7 @@ ll_fc:	ld	a,true			; флаг компрессии
 	; аксель
 ll1z:	di
 	ld      d,d			; вкл. аксель на уст. размера блока
-	ld      a,16			; размер буфера
+	ld      a,c			; размер буфера
 	ld      b,b			; выкл. аксель
 	ld      l,l			; копир. блока
 	ld      a,(hl)			;
@@ -285,18 +344,30 @@ llzero:	ld      a,false			; флаг последовательности нул
 	ld      (llzero+1),a
 	jr      ll2c
 	;
-ll2a:	ld      a,(hl)
+ll2a:	ld	a,d
+	or	a
+	jp	z,ll_decode_error	; decoded output wrapped out of WIN3
+	ld      a,(hl)
 	or      a
 	jr      nz,ll2b
 	inc     hl
 	dec     b
 	jr      z,ll2e
 ll2c:	ld      (de),a
-	inc     de			; de++ for decoding
+	inc	e			; de++ with a boundary check only on page wrap
+	jr	nz,llzero_count
+	inc	d
+	jr	z,llzero_boundary
+llzero_count:
 	dec     (hl)
 	jr      nz,ll2c
+llzero_done:
 	inc     hl
 	jr      ll2d
+llzero_boundary:
+	dec	(hl)
+	jp	nz,ll_decode_error	; zero run would continue into WIN0
+	jr	llzero_done
 	;
 ll2e:	ld      a,true
 	ld      (llzero+1),a		; флаг последовательности нулей
@@ -314,21 +385,27 @@ ll3:	push    de
 	pop     de
 	pop     hl			; hl=0C010h ?
 	jp	c,llerr_dss_after_path	; ошибка подкл.
-	ld      a,(llsize+1)		; ст.байт размера библы
-	ld      b,a
-	ld      a,h
-	sub     0C0h
-	cp      b
-	jp      c,loop			; назад в цикл
-	jr      nz,ll4
-	ld      a,(llsize)		; мл.байт размера библы
-	ld      b,a
-	ld      a,l
-	cp      b
-	jp      c,loop			; назад в цикл
+	ld	a,(llsize+1)
+	ld	b,a
+	ld	a,(llsize)
+	or	b
+	jp	nz,loop			; назад, пока не исчерпан prefix
+	ld	a,(llzero+1)
+	or	a
+	jp	nz,llerr_after_path	; prefix ended between RLE marker and count
 	;
-ll4:	xor     a			; false
-	ld      (llzero+1),a		; флаг последов. нулей
+ll4:
+	IFDEF	LIBMAN_CALL_TRACE
+	push	hl
+	ENDIF
+lloutend:
+	ld	hl,0
+	or	a
+	sbc	hl,de
+	IFDEF	LIBMAN_CALL_TRACE
+	pop	hl
+	ENDIF
+	jp	nz,llerr_after_path	; truncated or overlong RLE output
 	IFDEF	LIBMAN_CALL_TRACE
 	ld	(l_trace_copy_source_end),hl
 	ld	(l_trace_copy_dest_end),de
@@ -588,6 +665,7 @@ ll10:	push    de
 	ENDIF
 lloldw:	ld      a,-1			; сохр. начальная Page3
 	out     (0E2h),a		; восст. страницу
+	ld	a,(llhand)		; documented open file handle for DLL INIT
 	call    corecall		; иниц. (загрузить) библу
 	IFDEF	LIBMAN_DIAGNOSTICS
 	call	c,ll_record_init_failure
@@ -653,6 +731,10 @@ ll_clear_entry:
 	xor	a
 	ld	(ix+0),a
 	ret
+
+ll_decode_error:
+	pop	hl			; discard saved packed-source pointer
+	jp	llerr_after_path
 
 llerr_dss_before_path:
 	call	ll_record_dss_error
