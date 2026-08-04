@@ -122,6 +122,20 @@ include это breaking-ограничение размещения данных
 
 ## API и диагностика
 
+### z88dk z80asm export
+
+The `z80asm/` directory is a supported z88dk z80asm spelling of the same
+runtime. It is generated from the canonical SjASMPlus files by
+`scripts/export_z80asm.py`; do not edit generated files directly. z80asm does
+not provide SjASMPlus namespaces, so the public API and diagnostic fields use
+their legacy unqualified names (`l_load`, `l_call`, `l_info`, `l_free`,
+`l_reason`, `l_dss_error`, `l_load_stage`, and `l_init_status`). The
+`LIBMAN_MAX_LIBS` and `LIBMAN_DIAGNOSTICS` settings have identical meanings in
+both exports.
+
+Run `python -m unittest tests.test_z80asm_export` after changing the runtime.
+The test assembles both exports and checks byte identity and public offsets.
+
 - `LIBMAN.l_load`: `HL` — ASCIIZ-путь, `A` — окно; результат `HL=handle`;
 - `LIBMAN.l_call`: `HL` — handle, `B` — номер функции;
 - `LIBMAN.l_info`: `HL` — handle, `DE` — стабильный буфер 32 байта;
