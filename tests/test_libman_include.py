@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import io
 import re
 import shutil
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+
+from sprinter_mkdll.cli import main as mkdll_main
+from sprinter_mkdll.format import decode_library
+from sprinter_mkdll.model import LibraryFormat
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = (
     ROOT / "tests" / "fixtures" / "libman_smoke.asm",
     ROOT / "tests" / "fixtures" / "libman_win0_smoke.asm",
+    ROOT / "tests" / "fixtures" / "libman_l2only_smoke.asm",
+    ROOT / "tests" / "fixtures" / "libman_l0l1_smoke.asm",
     ROOT / "tests" / "fixtures" / "libman_diag_vectors.asm",
 )
 
@@ -180,6 +188,130 @@ class LibmanIncludeTests(unittest.TestCase):
         self.assertIn("ld\ta,(llzero+1)", completion)
         self.assertIn("jp\tnz,llerr_after_path", completion)
 
+    def test_l2_signature_dispatches_before_l0_l1_parsing(self) -> None:
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        loader = source.split("_L_LOAD:", 1)[1].split(
+            "ENDIF\t\t\t\t; !LIBMAN_RUNTIME_ONLY", 1
+        )[0]
+        signature_check = loader.split('cp\t"L"', 1)[1].split("ll_l2_entry:", 1)[0]
+        self.assertIn('cp\t"2"', signature_check)
+        self.assertIn("jp\tz,ll_l2_entry", signature_check)
+        # The "2" check must run before the "1"/"0" branch commits to the
+        # L0/L1 header layout.
+        self.assertLess(
+            signature_check.index('cp\t"2"'), signature_check.index('cp\t"1"')
+        )
+
+    def test_l2_only_build_rejects_l0_and_l1_signatures(self) -> None:
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        loader = source.split("_L_LOAD:", 1)[1].split(
+            "ENDIF\t\t\t\t; !LIBMAN_RUNTIME_ONLY", 1
+        )[0]
+        signature_check = loader.split('cp\t"L"', 1)[1].split("ll_l2_entry:", 1)[0]
+        l2_only_branch = signature_check.split("IFDEF\tLIBMAN_L2_ONLY", 1)[1].split(
+            "ELSE", 1
+        )[0]
+        self.assertIn("jp\tllerr_after_path", l2_only_branch)
+        self.assertNotIn('cp\t"1"', l2_only_branch)
+        self.assertNotIn('cp\t"0"', l2_only_branch)
+
+    def test_l2_tail_is_unconditional_but_l0_l1_tail_is_guarded(self) -> None:
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        # ll_l2_finish must be reachable from both the full build and
+        # LIBMAN_L2_ONLY, so its own label must not sit inside an IFNDEF
+        # LIBMAN_L2_ONLY guard.
+        before_finish = source.split("ll_l2_finish:", 1)[0]
+        last_directive = None
+        for token in ("IFNDEF\tLIBMAN_L2_ONLY", "IFDEF\tLIBMAN_L2_ONLY", "ENDIF"):
+            pos = before_finish.rfind(token)
+            if pos > (last_directive[1] if last_directive else -1):
+                last_directive = (token, pos)
+        self.assertIsNotNone(last_directive)
+        self.assertEqual(last_directive[0], "ENDIF")
+
+    def test_non_relocatable_l0_l1_branch_still_falls_through_to_ll4a(self) -> None:
+        # libman 1.3 reaches ll4a by falling off the end of the "no relocation
+        # table" branch.  Anything placed between that branch and ll4a is
+        # executed by every non-relocatable L0/L1 load, so the L2 entry block
+        # must not live there -- the emulator fixture cannot cover the L0/L1
+        # path, because it moves bytes through the block accelerator.
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        sentinel = "\tld\thl,3FFFh\t\t; макс. размер не перемещ. библы"
+        self.assertIn(sentinel, source)
+        between = source.split(sentinel, 1)[1].split("ll4a:", 1)[0]
+        instructions = [
+            line.split(";", 1)[0].strip()
+            for line in between.splitlines()
+            if line.strip() and not line.lstrip().startswith(";")
+        ]
+        self.assertEqual(instructions, ["ENDIF", "ll_fr:\tld\ta,true"])
+
+    def test_ll10_copy_loop_has_a_wraparound_guard(self) -> None:
+        # ll10's exit test compares only the high byte of the destination
+        # pointer, which wraps through 0 for a library ending exactly on the
+        # page's last byte (or a non-relocatable one, given the 3FFFh
+        # sentinel below).  Without a guard the loop never terminates and
+        # overwrites RAM in 16-byte steps until it crashes.
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        loop = source.split("ll10:\t", 1)[1].split("ll10_end:", 1)[0]
+        self.assertIn("ld      a,(ix+3)", loop)
+        self.assertIn("jr      nc,ll10", loop)
+        guard = loop.split("ld      a,(ix+3)", 1)[0]
+        self.assertIn("ld\ta,d", guard)
+        self.assertIn("or\ta", guard)
+        self.assertIn("jr\tz,ll10_end", guard)
+
+    def test_non_relocatable_sentinel_is_inclusive_page_end(self) -> None:
+        # 4000h would wrap (ix+3) through 100h when a non-relocatable library
+        # claims a fresh page outright, which combined with the ll10 guard
+        # above would make the copy loop exit on its very first check instead
+        # of running.  3FFFh is the loader's only correct choice once that
+        # guard exists.
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("hl,4000h\t\t; макс. размер не перемещ. библы", source)
+        self.assertIn("hl,3FFFh\t\t; макс. размер не перемещ. библы", source)
+
+    def test_l2_page_limit_check_reports_through_carry(self) -> None:
+        # The check is reached by CALL from sites that hold their own stack
+        # entries, and llerr_after_path unwinds _L_LOAD's frame by count, so a
+        # branch straight to the handler would leave the frame desynchronized.
+        source = (ROOT / "libman" / "libman_core13.asm").read_text(
+            encoding="utf-8"
+        )
+        body = source.split("ll2_check_page_limit:", 1)[1].split("ll_l2_entry:", 1)[0]
+        self.assertNotIn("llerr", body)
+        self.assertIn("sbc\thl,de", body)
+        entry = source.split("ll_l2_entry:", 1)[1].split("ll4a:", 1)[0]
+        calls = entry.count("call\tll2_check_page_limit")
+        self.assertEqual(calls, 2)
+        for tail in entry.split("call\tll2_check_page_limit")[1:]:
+            following = [
+                line.split(";", 1)[0].strip()
+                for line in tail.splitlines()
+                if line.strip() and not line.lstrip().startswith(";")
+            ]
+            # Only a flag-preserving POP may intervene before the verdict.
+            self.assertTrue(
+                following[0] == "jp\tc,llerr_after_path"
+                or (
+                    following[0].startswith("pop\t")
+                    and following[1] == "jp\tc,llerr_after_path"
+                ),
+                following[:2],
+            )
+
     def test_loader_accepts_physical_payload_over_64k(self) -> None:
         source = (ROOT / "libman" / "libman_core13.asm").read_text(
             encoding="utf-8"
@@ -293,3 +425,191 @@ class LibmanIncludeTests(unittest.TestCase):
             )
             result = ram.read_bytes()[0x7000]
             self.assertEqual(result, 0, f"diagnostic vector {result} failed")
+
+    @unittest.skipUnless(shutil.which("sjasmplus"), "sjasmplus is required")
+    def test_l0_l1_only_build_omits_the_l2_reader(self) -> None:
+        """The point of the option is that the L2 code is gone, not skipped."""
+        assembler = shutil.which("sjasmplus")
+        assert assembler is not None
+
+        l2_symbols = ("ll_l2_entry", "ll_l2_finish", "ll2_chunk", "ll2_left")
+        with tempfile.TemporaryDirectory() as temp_name:
+            temp = Path(temp_name)
+            shutil.copytree(ROOT / "libman", temp / "libman")
+            source = temp / "smoke.asm"
+            source.write_text(
+                (ROOT / "tests" / "fixtures" / "libman_l0l1_smoke.asm")
+                .read_text(encoding="utf-8")
+                .replace("../../libman/", "libman/"),
+                encoding="utf-8",
+            )
+
+            symbols: dict[str, str] = {}
+            for build in ("full", "LIBMAN_L0_L1_ONLY"):
+                symbol_file = temp / f"{build}.sym"
+                command = [
+                    assembler,
+                    "--nologo",
+                    f"--sym={symbol_file}",
+                    f"--raw={temp / build}.bin",
+                ]
+                if build == "full":
+                    # The same fixture without the define, so the comparison
+                    # below cannot pass just because a name was misspelt.
+                    text = source.read_text(encoding="utf-8")
+                    text = text.replace("DEFINE  LIBMAN_L0_L1_ONLY", "")
+                    text = text.replace("= 1861", "= 2191")
+                    text = text.replace(
+                        "LIBMAN.FORMAT_L0|LIBMAN.FORMAT_L1",
+                        "LIBMAN.FORMAT_L0|LIBMAN.FORMAT_L1|LIBMAN.FORMAT_L2",
+                    )
+                    plain = temp / "plain.asm"
+                    plain.write_text(text, encoding="utf-8")
+                    command.append(str(plain))
+                else:
+                    command.append(str(source))
+                result = subprocess.run(
+                    command, cwd=temp, capture_output=True, text=True, check=False
+                )
+                self.assertEqual(
+                    result.returncode, 0, result.stdout + result.stderr
+                )
+                symbols[build] = symbol_file.read_text(encoding="utf-8")
+
+        for name in l2_symbols:
+            with self.subTest(symbol=name):
+                self.assertIn(name, symbols["full"])
+                self.assertNotIn(name, symbols["LIBMAN_L0_L1_ONLY"])
+
+    @unittest.skipUnless(
+        shutil.which("sjasmplus") and shutil.which("z88dk-ticks"),
+        "sjasmplus and z88dk-ticks are required",
+    )
+    def test_l2_loader_vectors(self) -> None:
+        assembler = shutil.which("sjasmplus")
+        emulator = shutil.which("z88dk-ticks")
+        assert assembler is not None
+        assert emulator is not None
+
+        fixtures = ROOT / "tests" / "fixtures"
+        with tempfile.TemporaryDirectory() as temp_name:
+            temp = Path(temp_name)
+            shutil.copytree(ROOT / "libman", temp / "libman")
+
+            # The relocatable vector library is produced by the real tool, so
+            # the bitmap the loader consumes is the one sprinter-mkdll emits.
+            with redirect_stdout(io.StringIO()):
+                built = mkdll_main(
+                    [
+                        "build",
+                        str(fixtures / "l2_vector_lib.asm"),
+                        "--format",
+                        "l2",
+                        "--target",
+                        "1.4",
+                        "--assembler",
+                        "sjasmplus",
+                        "--name",
+                        "L2 VECTOR",
+                        "-o",
+                        str(temp / "l2_vector_lib.dll"),
+                    ]
+                )
+            self.assertEqual(built, 0)
+            library = decode_library((temp / "l2_vector_lib.dll").read_bytes())
+            self.assertIs(library.header.format, LibraryFormat.L2)
+            self.assertFalse(library.compressed)
+            # The fixture is only meaningful while the body spans several
+            # relocation chunks, with the last one partial.
+            body = library.header.code_size - 32
+            self.assertGreater(body, 2 * 128)
+            self.assertNotEqual(body % 128, 0)
+            self.assertGreater(library.relocation_count, 0)
+
+            source = temp / "libman_l2_vectors.asm"
+            source.write_text(
+                (fixtures / "libman_l2_vectors.asm")
+                .read_text(encoding="utf-8")
+                .replace("../../libman/", "libman/"),
+                encoding="utf-8",
+            )
+
+            # Both configurations run the same L2 path and must agree, which
+            # also covers LIBMAN_L2_ONLY allocating a single scratch page.
+            sizes: dict[str, int] = {}
+            for build in ("full", "LIBMAN_L2_ONLY"):
+                with self.subTest(build=build):
+                    output = temp / f"libman_l2_vectors_{build}.bin"
+                    symbols = temp / f"libman_l2_vectors_{build}.sym"
+                    ram = temp / f"libman_l2_vectors_{build}.ram"
+                    command = [
+                        assembler,
+                        "--nologo",
+                        f"--sym={symbols}",
+                        f"--raw={output}",
+                    ]
+                    if build != "full":
+                        command.append(f"-D{build}")
+                    command.append(str(source))
+                    assembled = subprocess.run(
+                        command,
+                        cwd=temp,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        assembled.returncode,
+                        0,
+                        assembled.stdout + assembled.stderr,
+                    )
+
+                    match = re.search(
+                        r"^TEST_DONE:\s+EQU\s+0x([0-9A-Fa-f]+)",
+                        symbols.read_text(encoding="utf-8"),
+                        re.IGNORECASE | re.MULTILINE,
+                    )
+                    self.assertIsNotNone(
+                        match, "TEST_DONE is missing from symbol file"
+                    )
+                    assert match is not None
+
+                    emulated = subprocess.run(
+                        [
+                            emulator,
+                            # Vector 2 claims a full page, so ll10 copies 16 KiB
+                            # through a stub that shadows the page on every
+                            # switch; the run is ~190M emulated cycles.
+                            "-counter",
+                            "900000000",
+                            "-l",
+                            "0",
+                            "-pc",
+                            "0100",
+                            "-end",
+                            match.group(1),
+                            "-output",
+                            str(ram),
+                            str(output),
+                        ],
+                        cwd=temp,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        # A loader bug can put the emulated Z80 somewhere the
+                        # cycle budget never retires; fail the test instead of
+                        # hanging the suite.
+                        timeout=120,
+                    )
+                    self.assertEqual(
+                        emulated.returncode, 0, emulated.stdout + emulated.stderr
+                    )
+                    result = ram.read_bytes()[0x7000]
+                    self.assertEqual(
+                        result, 0, f"L2 loader vector {result} failed"
+                    )
+                    sizes[build] = output.stat().st_size
+
+            # Proves the -D actually reached the assembler, so the second run
+            # exercised a different build and not the first one twice.
+            self.assertLess(sizes["LIBMAN_L2_ONLY"], sizes["full"])

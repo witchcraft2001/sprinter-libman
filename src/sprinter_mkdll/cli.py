@@ -16,14 +16,14 @@ def _library_format(value: str) -> LibraryFormat:
     try:
         return LibraryFormat(value.lower())
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("format must be l0 or l1") from exc
+        raise argparse.ArgumentTypeError("format must be l0, l1 or l2") from exc
 
 
 def _target(value: str) -> LibmanTarget:
     try:
         return LibmanTarget(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("target must be 1.2 or 1.3") from exc
+        raise argparse.ArgumentTypeError("target must be 1.2, 1.3 or 1.4") from exc
 
 
 def _version(value: str) -> int:
@@ -42,7 +42,12 @@ def _date(value: str):
 
 def _compression_group(parser: argparse.ArgumentParser, *, default: bool | None) -> None:
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--compress", dest="compress", action="store_true", help="enable historical zero-RLE compression")
+    group.add_argument(
+        "--compress",
+        dest="compress",
+        action="store_true",
+        help="enable historical zero-RLE compression (L0/L1 only; L2 never compresses)",
+    )
     group.add_argument("--no-compress", dest="compress", action="store_false", help="write an uncompressed DLL")
     parser.set_defaults(compress=default)
 
@@ -65,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--version", type=_version, help="L1 version, or override the L0 header version")
     build.add_argument("--date", type=_date, help="L1 date, or override the L0 header date")
     build.add_argument("--encoding", choices=("ascii", "cp866"), default="ascii")
-    _compression_group(build, default=True)
+    _compression_group(build, default=None)
 
     inspect = subcommands.add_parser("inspect", help="print DLL metadata and layout")
     inspect.add_argument("file", type=Path)
@@ -80,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     decompress.add_argument("input", type=Path)
     decompress.add_argument("-o", "--output", required=True, type=Path)
 
-    convert = subcommands.add_parser("convert", help="convert between L0 and L1")
+    convert = subcommands.add_parser("convert", help="convert between L0, L1 and L2")
     convert.add_argument("input", type=Path)
     convert.add_argument("-o", "--output", required=True, type=Path)
     convert.add_argument("--format", required=True, type=_library_format)
@@ -120,12 +125,22 @@ def run(args: argparse.Namespace) -> int:
             include_dirs=args.include_dir,
         )
         output = args.output or args.source.with_suffix(".dll")
+        # --compress/--no-compress default to the historical L0/L1 behavior
+        # (compressed) unless the user overrides it; L2 defaults to
+        # uncompressed since it never supports RLE.
+        compress = args.compress
+        if compress is None:
+            compress = args.format is not LibraryFormat.L2
         data = build_library_from_binaries(
             first,
             second,
             library_format=args.format,
-            compress=args.compress,
-            name=args.name if args.name is not None else args.source.stem if args.format is LibraryFormat.L1 else None,
+            compress=compress,
+            name=(
+                args.name
+                if args.name is not None
+                else args.source.stem if args.format in (LibraryFormat.L1, LibraryFormat.L2) else None
+            ),
             version=args.version,
             build_date=args.date,
             encoding=args.encoding,

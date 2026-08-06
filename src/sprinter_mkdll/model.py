@@ -13,6 +13,7 @@ HEADER_SIZE = 32
 class LibraryFormat(str, Enum):
     L0 = "l0"
     L1 = "l1"
+    L2 = "l2"
 
     @property
     def signature(self) -> bytes:
@@ -23,12 +24,13 @@ class LibraryFormat(str, Enum):
         try:
             return cls(value.decode("ascii").lower())
         except (UnicodeDecodeError, ValueError) as exc:
-            raise ToolError(f"unsupported library signature {value!r}; expected L0 or L1") from exc
+            raise ToolError(f"unsupported library signature {value!r}; expected L0, L1 or L2") from exc
 
 
 class LibmanTarget(str, Enum):
     V12 = "1.2"
     V13 = "1.3"
+    V14 = "1.4"
 
 
 @dataclass
@@ -145,5 +147,7 @@ def parse_date(value: str) -> date:
 
 
 def validate_target(library_format: LibraryFormat, target: LibmanTarget) -> None:
+    if library_format is LibraryFormat.L2 and target is not LibmanTarget.V14:
+        raise ToolError("L2 requires --target 1.4")
     if target is LibmanTarget.V12 and library_format is LibraryFormat.L1:
-        raise ToolError("libman 1.2 supports L0 only; select --format l0 or --target 1.3")
+        raise ToolError("libman 1.2 supports L0 only; select --format l0 or --target 1.3/1.4")

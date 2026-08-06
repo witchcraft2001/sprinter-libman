@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 
 The Python package lives in `src/sprinter_mkdll/`. `cli.py` defines the
-command-line interface, `format.py` handles L0/L1 encoding and validation,
+command-line interface, `format.py` handles L0/L1/L2 encoding and validation,
 `assembler.py` runs supported Z80 assemblers, and `model.py` contains shared
 types. The exportable Sprinter runtime is in `libman/`; keep
 `libman_core.inc`, `libman_state.inc`, and their internal ASM implementation

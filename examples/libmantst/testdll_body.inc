@@ -7,6 +7,23 @@
         jp      dll_test
 
 dll_init:
+; Separate the two things that can go wrong here, because l_init_status is the
+; only channel back to the application:
+;   #E1  the library was not relocated (a relocated immediate disagrees with
+;        the address the CPU actually reached), so nothing else is meaningful;
+;   #E2  the trailing payload read back as zero;
+;   else the byte that was actually read, which says where the file pointer
+;        really was when INIT got control.
+        push    af                      ; keep the DSS handle INIT was given
+        call    dll_init_here
+dll_init_here:
+        pop     hl                      ; address the call actually pushed
+        ld      de,dll_init_here        ; the same label as a relocated immediate
+        or      a
+        sbc     hl,de
+        jr      nz,dll_init_not_relocated
+        pop     af
+
         ld      hl,dll_payload_byte
         ld      de,1
         ld      c,#13                   ; DSS READ, A is the INIT file handle
@@ -18,7 +35,15 @@ dll_init:
         xor     a
         ret
 dll_init_failed:
-        ld      a,2
+        or      a                       ; cp above left A = the byte read
+        jr      nz,dll_init_report
+        ld      a,#e2                   ; zero would look like "no failure"
+dll_init_report:
+        scf
+        ret
+dll_init_not_relocated:
+        pop     af
+        ld      a,#e1
         scf
         ret
 

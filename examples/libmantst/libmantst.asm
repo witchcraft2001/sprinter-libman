@@ -16,8 +16,10 @@ STACK_TOP               equ     #bff0
 DSS                     equ     #10
 DSS_EXIT                equ     #41
 DSS_PCHARS              equ     #5c
-LMTL0_FILE_SIZE         equ     #008b
-LMTL1_FILE_SIZE         equ     #008b
+LMTL0_FILE_SIZE         equ     #00a5
+LMTL1_FILE_SIZE         equ     #00a4
+LMTL2_FILE_SIZE         equ     #00a4
+LMTL2BIG_FILE_SIZE      equ     #47fd
 
         define  LIBMAN_MAX_LIBS 1
         define  LIBMAN_NO_LEGACY_API
@@ -42,6 +44,7 @@ start:
         ld      hl,msg_banner
         call    puts
 
+        IFNDEF  LIBMAN_L2_ONLY
         ld      hl,file_l0
         ld      de,name_l0
         ld      ix,LMTL0_FILE_SIZE
@@ -57,7 +60,61 @@ start:
         ld      c,1
         call    test_library
         jr      c,test_failed
+        ELSE
+; This build understands only L2, so the historical formats must be turned
+; away on their signature, before the loader commits to any header layout.
+        ld      hl,file_l0
+        call    test_library_rejected
+        jr      c,test_failed
 
+        ld      hl,file_l1
+        call    test_library_rejected
+        jr      c,test_failed
+        ENDIF
+
+        IFNDEF  LIBMAN_L0_L1_ONLY
+        ld      hl,file_l2
+        ld      de,name_l2
+        ld      ix,LMTL2_FILE_SIZE
+        ld      a,'2'
+        ld      c,1
+        call    test_library
+        jr      c,test_failed
+
+; The case L2 exists for: code fills the page and the relocation table is
+; loaded separately.  The library checks its own relocation from INIT and
+; again from function 2.
+        ld      hl,file_l2big
+        ld      de,name_l2big
+        ld      ix,LMTL2BIG_FILE_SIZE
+        ld      a,'2'
+        ld      c,1
+        call    test_library
+        jr      c,test_failed
+
+; An L2 whose file_size does not equal code_size + reloc_size claims to be
+; RLE-compressed, which L2 never is.  It must be refused, not decoded.
+        ld      hl,file_l2bad
+        call    test_library_rejected
+        jr      c,test_failed
+        ELSE
+; This build keeps the formats libman 1.3 understood, so every L2 file must be
+; turned away on its signature -- including the one with the broken header,
+; which must not reach any header-layout check.
+        ld      hl,file_l2
+        call    test_library_rejected
+        jr      c,test_failed
+
+        ld      hl,file_l2big
+        call    test_library_rejected
+        jr      c,test_failed
+
+        ld      hl,file_l2bad
+        call    test_library_rejected
+        jr      c,test_failed
+        ENDIF
+
+        IFNDEF  LIBMAN_L2_ONLY
         ld      hl,file_antonfnt
         ld      de,name_antonfnt
         ld      ix,#1803
@@ -73,6 +130,7 @@ start:
         ld      c,0
         call    test_library
         jr      c,test_failed
+        ENDIF
 
         ld      hl,msg_all_ok
         call    puts
@@ -146,6 +204,14 @@ test_failed:
         call    puts
         ld      hl,(LIBMAN.l_trace_copy_dest_end)
         call    print_hex16
+        ld      hl,msg_trace_l2_point
+        call    puts
+        ld      a,(LIBMAN.l_trace_l2_point)
+        call    print_hex8
+        ld      hl,msg_trace_l2_a
+        call    puts
+        ld      a,(LIBMAN.l_trace_l2_a)
+        call    print_hex8
         ld      hl,msg_newline
         call    puts
         ld      b,1
@@ -309,6 +375,42 @@ cleanup_library:
         ld      (dll_loaded),a
         ret
 
+; In: HL=DLL filename that this build must refuse.
+; Out: CF=0 when l_load rejected it and blamed the load itself.
+test_library_rejected:
+        ld      (selected_file),hl
+        xor     a
+        ld      (dll_loaded),a
+
+        ld      hl,msg_rejecting
+        call    puts
+        ld      hl,(selected_file)
+        call    puts
+        ld      hl,msg_separator
+        call    puts
+
+        ld      hl,(selected_file)
+        ld      a,1                     ; the same window a real load would use
+        call    LIBMAN.l_load
+        jr      nc,fail_not_rejected
+        ld      a,(LIBMAN.l_reason)
+        cp      LIBMAN.LR_LOAD
+        jr      nz,fail_wrong_reason
+        ld      hl,msg_ok
+        call    puts
+        or      a
+        ret
+
+fail_not_rejected:
+        ld      (dll_handle),hl
+        ld      a,1
+        ld      (dll_loaded),a
+        ld      hl,msg_not_rejected
+        jr      fail_with_cleanup
+fail_wrong_reason:
+        ld      hl,msg_wrong_reason
+        jr      fail
+
 ; CF=1 if the opened file is from a different LMTEST build.
 test_file_size_mismatch:
         ld      hl,(LIBMAN.l_trace_load_size)
@@ -366,12 +468,20 @@ print_hex_digit:
         ld      hl,hex_buffer
         jp      puts
 
+; print_hex8 ends in print_hex_nibble, which loads HL with the output buffer.
+; Without saving HL the low byte printed here was the low byte of hex_buffer,
+; so every 16-bit field above reported a correct high byte and a constant lie
+; for the low one.
 print_hex16:
         push    af
+        push    hl
         ld      a,h
         call    print_hex8
+        pop     hl
+        push    hl
         ld      a,l
         call    print_hex8
+        pop     hl
         pop     af
         ret
 
@@ -397,9 +507,19 @@ hex_buffer:
         db      0,0
 
 msg_banner:
-        db      13,10,"libman L0/L1 test",13,10,0
+        IFDEF   LIBMAN_L2_ONLY
+        db      13,10,"libman L2-only test",13,10,0
+        ELSE
+        IFDEF   LIBMAN_L0_L1_ONLY
+        db      13,10,"libman L0/L1-only test",13,10,0
+        ELSE
+        db      13,10,"libman L0/L1/L2 test",13,10,0
+        ENDIF
+        ENDIF
 msg_testing:
         db      "Testing ",0
+msg_rejecting:
+        db      "Rejecting ",0
 msg_separator:
         db      " ... ",0
 msg_ok:
@@ -432,6 +552,10 @@ msg_trace_source_end:
         db      " sh=",0
 msg_trace_dest_end:
         db      " de=",0
+msg_trace_l2_point:
+        db      " l2p=",0
+msg_trace_l2_a:
+        db      " l2a=",0
 msg_newline:
         db      13,10,0
 
@@ -451,11 +575,21 @@ msg_result:
         db      "DLL arguments/results",0
 msg_free:
         db      "l_free",0
+msg_not_rejected:
+        db      "l_load accepted a DLL it must refuse",0
+msg_wrong_reason:
+        db      "rejected with the wrong l_reason",0
 
 file_l0:
         db      "LMTL0.DLL",0
 file_l1:
         db      "LMTL1.DLL",0
+file_l2:
+        db      "LMTL2.DLL",0
+file_l2big:
+        db      "LMTL2BIG.DLL",0
+file_l2bad:
+        db      "LMTBAD.DLL",0
 file_antonfnt:
         db      "ANTONFNT.DLL",0
 file_sample:
@@ -464,6 +598,10 @@ name_l0:
         db      "LIBMAN TEST L0",0
 name_l1:
         db      "LIBMAN TEST L1",0
+name_l2:
+        db      "LIBMAN TEST L2",0
+name_l2big:
+        db      "LIBMAN TEST BIG",0
 name_antonfnt:
         db      "Anton Enin Font",0
 name_sample:

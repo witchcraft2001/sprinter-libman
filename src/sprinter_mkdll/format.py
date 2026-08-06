@@ -7,7 +7,13 @@ from pathlib import Path
 from .errors import ToolError
 from .model import HEADER_SIZE, Header, LibraryFormat, LibmanTarget, encode_name, validate_target
 
-MAX_LOADED_SIZE = 0x4000
+MAX_LOADED_SIZE = 0x4000  # L0/L1: code and relocation table together
+MAX_L2_CODE_SIZE = 0x4000  # L2: header + code alone, a full 16 KiB page
+MAX_L2_TOTAL_SIZE = MAX_L2_CODE_SIZE + 0x7FC  # + the largest bitmap a full page can need
+
+
+def _total_size_limit(library_format: LibraryFormat) -> int:
+    return MAX_L2_TOTAL_SIZE if library_format is LibraryFormat.L2 else MAX_LOADED_SIZE
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,10 @@ def decode_library(raw: bytes, *, verify: bool = True) -> DecodedLibrary:
         raise ToolError("header code size is smaller than the 32-byte DLL header")
     if expected_size < HEADER_SIZE:
         raise ToolError("header code/table sizes are smaller than the DLL header")
+    if partial_header.format is LibraryFormat.L2 and partial_header.file_size != expected_size:
+        raise ToolError(
+            "L2 does not support RLE compression; loaded size must equal code_size + reloc_size"
+        )
     compressed = partial_header.file_size != expected_size
     if compressed:
         image = loaded_data[:16] + decompress_zero_rle(loaded_data[16:], expected_size - 16)
@@ -83,13 +93,18 @@ def validate_decoded(library: DecodedLibrary, target: LibmanTarget | None = None
     header = library.header
     if target is not None:
         validate_target(header.format, target)
-    if len(library.image) > MAX_LOADED_SIZE:
+    if header.format is LibraryFormat.L2 and header.code_size > MAX_L2_CODE_SIZE:
+        raise ToolError(
+            f"L2 code (header+code) is {header.code_size} bytes; libman limit is {MAX_L2_CODE_SIZE}"
+        )
+    total_limit = _total_size_limit(header.format)
+    if len(library.image) > total_limit:
         raise ToolError(
             f"uncompressed code and relocation table occupy {len(library.image)} bytes; "
-            f"libman limit is {MAX_LOADED_SIZE}"
+            f"libman limit is {total_limit}"
         )
-    if header.file_size > MAX_LOADED_SIZE:
-        raise ToolError(f"loaded file prefix is {header.file_size} bytes; libman limit is {MAX_LOADED_SIZE}")
+    if header.file_size > total_limit:
+        raise ToolError(f"loaded file prefix is {header.file_size} bytes; libman limit is {total_limit}")
     expected = _expected_bitmap_size(header)
     if header.reloc_size not in (0, expected):
         raise ToolError(
@@ -97,7 +112,11 @@ def validate_decoded(library: DecodedLibrary, target: LibmanTarget | None = None
         )
     if header.format is LibraryFormat.L0 and header.reloc_size and library.bitmap[:4] != b"\0\0\0\0":
         raise ToolError("L0 relocation bitmap must start with four zero bytes for the 32-byte header")
-    if header.reloc_size and header.reloc_size >> 8 == header.reloc_size & 0xFF:
+    if (
+        header.format is not LibraryFormat.L2
+        and header.reloc_size
+        and header.reloc_size >> 8 == header.reloc_size & 0xFF
+    ):
         raise ToolError(
             f"relocation table size 0x{header.reloc_size:04X} triggers a libman loader bug "
             "that disables relocation"
@@ -159,11 +178,18 @@ def encode_library(image: bytes, *, compress: bool, trailing_data: bytes = b"") 
     header = Header.parse(image[:HEADER_SIZE])
     if len(image) != header.code_size + header.reloc_size:
         raise ToolError("canonical DLL length does not match header code/table sizes")
-    if len(image) > MAX_LOADED_SIZE:
+    if header.format is LibraryFormat.L2 and header.code_size > MAX_L2_CODE_SIZE:
+        raise ToolError(
+            f"L2 code (header+code) is {header.code_size} bytes; libman limit is {MAX_L2_CODE_SIZE}"
+        )
+    total_limit = _total_size_limit(header.format)
+    if len(image) > total_limit:
         raise ToolError(
             f"uncompressed code and relocation table occupy {len(image)} bytes; "
-            f"libman limit is {MAX_LOADED_SIZE}"
+            f"libman limit is {total_limit}"
         )
+    if header.format is LibraryFormat.L2 and compress:
+        raise ToolError("L2 does not support RLE compression; build with compress=False")
     mutable = bytearray(image)
     # The file-size word is in the uncompressed prefix, so updating it cannot alter
     # the RLE layout.  Set a provisional value before compression for clarity.
@@ -249,7 +275,7 @@ def build_library_from_binaries(
     build_date: date | None = None,
     encoding: str = "ascii",
 ) -> bytes:
-    """Build an L0/L1 DLL from images whose assembly origins differ by 0x100."""
+    """Build an L0/L1/L2 DLL from images whose assembly origins differ by 0x100."""
     if library_format is LibraryFormat.L0:
         if len(first_pass) < HEADER_SIZE:
             raise ToolError("L0 source did not produce the mandatory 32-byte header")
@@ -268,6 +294,24 @@ def build_library_from_binaries(
         bitmap = _relocation_bitmap(code, relocated)
         if bitmap[:4] != b"\0\0\0\0":
             raise ToolError("L0 header changed between assembler passes; its relocation bits must be zero")
+    elif library_format is LibraryFormat.L2:
+        if len(first_pass) + HEADER_SIZE > MAX_L2_CODE_SIZE:
+            raise ToolError(
+                f"L2 code (header+code) would be {len(first_pass) + HEADER_SIZE} bytes; "
+                f"libman limit is {MAX_L2_CODE_SIZE}"
+            )
+        header = Header.create(
+            LibraryFormat.L2,
+            name=name if name is not None else "library",
+            version=0x0100 if version is None else version,
+            build_date=build_date,
+            encoding=encoding,
+        )
+        # L2 never carries the L1 loader-size-bug workaround padding; it is a new
+        # loader path that does not share that historical bug.
+        bitmap = _relocation_bitmap(first_pass, second_pass)
+        code_size = HEADER_SIZE + len(first_pass)
+        code = b"\0" * HEADER_SIZE + first_pass
     else:
         if len(first_pass) + HEADER_SIZE > 0xFFFF:
             raise ToolError("L1 code is too large for the 16-bit DLL header")
@@ -301,25 +345,32 @@ def convert_library(raw: bytes, output_format: LibraryFormat, *, compress: bool 
         )
     header = source.header
     old_bitmap = source.bitmap
+    # L0's bitmap has four leading bytes covering its header; L1 and L2 share
+    # the same bitmap shape (no header bits), so only L0 needs special-casing
+    # on either side of the conversion.
     if header.reloc_size == 0:
         new_bitmap = b""
-    elif output_format is LibraryFormat.L1:
+    elif header.format is LibraryFormat.L0:
         if len(old_bitmap) < 4 or old_bitmap[:4] != b"\0\0\0\0":
             raise ToolError("cannot convert L0: its header relocation bits are not zero")
         new_bitmap = old_bitmap[4:]
-    else:
+    elif output_format is LibraryFormat.L0:
         new_bitmap = b"\0\0\0\0" + old_bitmap
-    code, new_bitmap = _pad_converted_image_around_loader_size_bug(
-        source.image[:source.header.code_size], new_bitmap, output_format
-    )
+    else:
+        new_bitmap = old_bitmap
+    code = source.image[:source.header.code_size]
+    if output_format is not LibraryFormat.L2:
+        # L2 never carries the L1/L0 loader-size-bug workaround padding.
+        code, new_bitmap = _pad_converted_image_around_loader_size_bug(code, new_bitmap, output_format)
     header.format = output_format
     header.code_size = len(code)
     header.reloc_size = len(new_bitmap)
     image = bytearray(code + new_bitmap)
     _set_header_and_checksum(image, header)
+    default_compress = False if output_format is LibraryFormat.L2 else source.compressed
     return encode_library(
         bytes(image),
-        compress=source.compressed if compress is None else compress,
+        compress=default_compress if compress is None else compress,
         trailing_data=source.trailing_data,
     )
 
