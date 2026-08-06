@@ -15,6 +15,33 @@
         ASSERT  $ < 4000h
         ENDIF
 
+        IFDEF   LIBMAN_L2_ONLY
+        IFDEF   LIBMAN_L0_L1_ONLY
+        ; sjasmplus has no ERROR directive; the symbol name carries the reason.
+LIBMAN_L2_ONLY_CONFLICTS_WITH_L0_L1_ONLY EQU 1
+        ASSERT  LIBMAN_L2_ONLY_CONFLICTS_WITH_L0_L1_ONLY = 0
+        ENDIF
+        ENDIF
+
+
+; One codebase, one version.  Which DLL formats a build understands is a
+; build option, not a version: LIBMAN_L0_L1_ONLY drops L2 and leaves the
+; formats libman 1.3 understood, LIBMAN_L2_ONLY drops L0/L1.  Both keep every
+; 1.4 fix.  The frozen historical 1.3 loader lives in docs/libman13.
+VERSION         EQU     0104h           ; 1.4, major in the high byte
+FORMAT_L0       EQU     1
+FORMAT_L1       EQU     2
+FORMAT_L2       EQU     4
+
+        IFDEF   LIBMAN_L2_ONLY
+FORMATS         EQU     FORMAT_L2
+        ELSE
+        IFDEF   LIBMAN_L0_L1_ONLY
+FORMATS         EQU     FORMAT_L0|FORMAT_L1
+        ELSE
+FORMATS         EQU     FORMAT_L0|FORMAT_L1|FORMAT_L2
+        ENDIF
+        ENDIF
 
 LS_NONE         EQU     0
 LS_TEMP_ALLOC   EQU     1

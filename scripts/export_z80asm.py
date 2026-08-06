@@ -54,7 +54,7 @@ def translate(text: str) -> str:
             continue
 
         translated = line.replace("LIBMAN.", "")
-        for char in ("L", "1", "0"):
+        for char in ("L", "1", "0", "2"):
             translated = translated.replace(f'"{char}"', f"'{char}'")
         translated = translated.replace("'\\'", "5Ch")
         lines.append(translated)

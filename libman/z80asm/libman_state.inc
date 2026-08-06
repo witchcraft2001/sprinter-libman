@@ -333,6 +333,21 @@ llid:
 llhand:
         db      0
 
+; L2 relocation chunk loop (see ll_l2_finish in libman_core13.asm).  Estex-DSS
+; promises nothing about HL/DE/IY across a call, and each chunk issues a READ
+; for its slice of the bitmap, so progress lives here rather than in registers.
+; ll2_code_addr is an absolute WIN3 address, not an offset.
+        IFNDEF  LIBMAN_L0_L1_ONLY
+ll2_left:
+        dw      0
+ll2_code_addr:
+        dw      0
+ll2_table_addr:
+        dw      0
+ll2_chunk_size:
+        dw      0
+        ENDIF
+
 lcstart:
         dw      0
 lcoldp:
@@ -400,6 +415,14 @@ l_trace_copy_source_end:
         dw      0
 l_trace_copy_dest_end:
         dw      0
+; Marks which DSS call inside the L2 tail (ll_l2_finish/ll2_chunk) is about
+; to run, so a real DSS failure there can be pinned to a call site instead of
+; guessed at from the shared LS_COPY stage alone.  See libman_core13.asm for
+; the site numbering.
+l_trace_l2_point:
+        db      0
+l_trace_l2_a:
+        db      0
         ENDIF
 
         IFDEF   LIBMAN_PATH_BUFFER

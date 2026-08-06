@@ -76,10 +76,17 @@ _L_LOAD:
 	xor	a
 	ld	(ll_tmp_owned),a
 	ld	(ll_final_new),a
+	IFNDEF	LIBMAN_L2_ONLY
 	ld	(llzero+1),a
+	IFNDEF	LIBMAN_L0_L1_ONLY
+	ld	(ll2_active+1),a	; флаг "это L2"
+	ENDIF
+	ENDIF
 	ld	a,true
 	ld	(ll_fr+1),a		; флаг релокации
+	IFNDEF	LIBMAN_L2_ONLY
 	ld	(ll_fc+1),a		; флаг компрессии
+	ENDIF
 	in      a,(0E2h)
 	ld      (lloldw+1),a		; сохр. начальную Page3
 	IFDEF	LIBMAN_TEST_LOAD_FAILURE_HOOK
@@ -87,7 +94,11 @@ _L_LOAD:
 	call	LIBMAN_TEST_LOAD_FAILURE_HOOK
 	jp	c,llerr_before_path
 	ENDIF
-	; выделить блок в 2 страницы
+	; выделить блок в 2 страницы.  L2 не распаковывается и само по себе не
+	; нуждалось бы во 2-й странице, но она нужна как раз для того, чтобы
+	; ll_l2_finish мог переключаться на неё через тот же индекс страницы
+	; (1), что доказанно работает у L0/L1 (см. ll10) -- см. docs/l2_plan.md
+	; про то, почему временная страница у L2 не может использовать индекс 0.
 	IFDEF	LIBMAN_DIAGNOSTICS
 	ld	a,LS_TEMP_ALLOC
 	ld	(ll_load_stage_active),a
@@ -183,8 +194,17 @@ ll_eof_size_ready:
 	ld	a,(ix+0)
 	cp	'L'
 	jp	nz,llerr_after_path	; не знакомый формат библы
-	ld	e,true
 	ld	a,(ix+1)
+	cp	'2'
+	IFDEF	LIBMAN_L0_L1_ONLY
+	jp	z,llerr_after_path	; L2 в этой сборке не поддержан
+	ELSE
+	jp	z,ll_l2_entry
+	ENDIF
+	IFDEF	LIBMAN_L2_ONLY
+	jp	llerr_after_path	; в этой сборке валиден только "L2"
+	ELSE
+	ld	e,true
 	cp	'1'
 	jr	z,ll0s
 	cp	'0'
@@ -434,11 +454,22 @@ lloutend:
 	inc     hl
 	ex      de,hl
 	dec     hl
-ll_fr:	ld	a,true			; флаг релокации
+	ld	a,(ll_fr+1)		; флаг релокации
 	or	a
 	jr	nz,ll4a
-	; библа была не перемещаемая (без рел-таблицы)
-	ld	hl,4000h		; макс. размер не перемещ. библы
+	; библа была не перемещаемая (без рел-таблицы).  3FFFh -- инклюзивный
+	; конец страницы, как и у L2 (см. ll2_relocatable): 4000h завернул бы
+	; (ix+3) через 100h при подселении на свежую страницу, а вместе с
+	; guard'ом выше в ll10 сделал бы цикл копирования бесконечным вместо
+	; безобидного усечения до 256 байт.
+	ld	hl,3FFFh		; макс. размер не перемещ. библы
+	ENDIF
+
+; ll_fr must stay defined when the L0/L1 block above is stripped out: the L2
+; path reads the flag through (ll_fr+1).  In the full build the non-relocatable
+; L0/L1 branch above still falls through this LD as code, exactly as in libman
+; 1.3; A is dead until ll4a reloads it.
+ll_fr:	ld	a,true			; флаг релокации
 ll4a:	ld      (llsize),hl		; размер библы (код)
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      bc,003Bh		; подкл. 1-ю страницу в 3-е окно
@@ -545,6 +576,14 @@ ll9:	ld	c,a
 	ld      (ix+1),l		; дескр. страницы библы
 	ld      (ix+2),d		; ст.байт адреса начала библы
 	ld      (ix+3),e		; ст.байт адреса конца библы
+	IFDEF	LIBMAN_L2_ONLY
+	jp	ll_l2_finish		; единственный формат в этой сборке
+	ELSE
+	IFNDEF	LIBMAN_L0_L1_ONLY
+ll2_active:	ld	a,false			; флаг "эта загрузка -- L2"
+	or	a
+	jp	nz,ll_l2_finish
+	ENDIF
 	push	de
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
 	ld      bc,013Bh		; подкл. 2-ю страницу в 3-е окно
@@ -592,6 +631,15 @@ nofix:	ld      de,(llsize)		; длина кода (размер библы)
 	ld	a,(hl)
 	ld	(l_trace_relocated+2),a
 	ENDIF
+	ENDIF				; !LIBMAN_L2_ONLY (staging is format-specific)
+
+; Перенос готового образа из 2-й страницы временного блока в целевую.
+; Оба формата приходят сюда с одним состоянием: отрелоцированный код лежит
+; по 0C000h во 2-й странице временного блока, WIN3 подключён к ней же.
+; Единственное место в загрузчике, которое чередует WIN3 между двумя разными
+; дескрипторами, и единственное, чья работа подтверждена на реальном железе,
+; поэтому L2 пользуется им как есть, а не своей копией (см. docs/l2_plan.md).
+ll_copy_to_target:
 	ld      hl,0C000h
 	ld      a,(ix+2)
 	or      0C0h
@@ -599,6 +647,21 @@ nofix:	ld      de,(llsize)		; длина кода (размер библы)
 	ld      e,0
 ll10:	push    de
 	ld      de,llbuf		; буфер первых 16-ти байт заголовка
+	IFDEF	LIBMAN_TEST_NO_ACCELERATOR
+	; Тестовая подстановка: тот же перенос 16 байт и те же значения
+	; регистров на выходе, но обычным LDIR.  Эмулятор исполняет идиому
+	; акселя как однобайтный LD, поэтому без замены ll10 переносил бы
+	; в тестах 1 байт из 16 и выдавал мусорную страницу за успешную
+	; загрузку (см. tests/fixtures/libman_l2_vectors.asm).
+	push	hl
+	push	de
+	push	bc
+	ld	bc,16
+	ldir
+	pop	bc
+	pop	de
+	pop	hl
+	ELSE
 	; аксель
 	di
 	ld      d,d			; вкл. аксель на уст. размера блока
@@ -609,15 +672,38 @@ ll10:	push    de
 	ld      (de),a			;
 	ld      b,b			; выкл. аксель
 	ei
+	ENDIF
 	pop     de
 	push    hl
 	push	de
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,5
+	ld	(l_trace_l2_point),a
+	ENDIF
 	ld      a,(ix+1)		; дескр. блока из 2-х страниц
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	(l_trace_l2_a),a
+	ENDIF
 	ld      bc,003Bh		; подкл. 1-ю страницу в 3-е окно
 	rst     10h
 	pop	de
 	jp	c,llcopy_map_final_error
 	ld      hl,llbuf		; буфер первых 16-ти байт заголовка
+	IFDEF	LIBMAN_TEST_NO_ACCELERATOR
+	; Тестовая подстановка: тот же перенос 16 байт и те же значения
+	; регистров на выходе, но обычным LDIR.  Эмулятор исполняет идиому
+	; акселя как однобайтный LD, поэтому без замены ll10 переносил бы
+	; в тестах 1 байт из 16 и выдавал мусорную страницу за успешную
+	; загрузку (см. tests/fixtures/libman_l2_vectors.asm).
+	push	hl
+	push	de
+	push	bc
+	ld	bc,16
+	ldir
+	pop	bc
+	pop	de
+	pop	hl
+	ELSE
 	; аксель
 	di
 	ld      d,d			; вкл. аксель на уст. размера блока
@@ -628,8 +714,16 @@ ll10:	push    de
 	ld      (de),a			;
 	ld      b,b			; выкл. аксель
 	ei
+	ENDIF
 	push	de
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,6
+	ld	(l_trace_l2_point),a
+	ENDIF
 	ld      a,(llid)		; дескр. выдел. блока из 2-х страниц
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	(l_trace_l2_a),a
+	ENDIF
 	ld      bc,013Bh		; подкл. 2-ю страницу в 3-е окно
 	rst     10h
 	pop	de
@@ -640,11 +734,25 @@ ll10:	push    de
 	ex      de,hl
 	add     hl,bc
 	ex      de,hl
+	; d only grows from the loop's starting value, so d=0 unambiguously
+	; means it wrapped past the top of the address space: without this
+	; guard a library ending exactly on the last byte of a page (d=FFh
+	; wrapping to 00h) makes "cp d" true for every d and the loop never
+	; terminates, overwriting all of RAM 16 bytes at a time.
+	ld	a,d
+	or	a
+	jr	z,ll10_end
 	ld      a,(ix+3)
 	or      0C0h
 	cp      d
 	jr      nc,ll10
-	ld      a,(ix+1)		; дескр. блока из 2-х страниц
+ll10_end:
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,7
+	ld	(l_trace_l2_point),a
+	ENDIF
+ll_finish_common:
+	ld      a,(ix+1)		; дескр. целевой страницы
 	ld      bc,003Bh		; подкл. 1-ю страницу в 3-е окно
 	rst     10h
 	jp	c,llerr_dss_with_entry
@@ -687,15 +795,259 @@ lloldw:	ld      a,-1			; сохр. начальная Page3
 	ENDIF
 	call	ll_close_file
 	call	c,ll_record_dss_error
-	jr	c,ll_close_error
+	jp	c,ll_close_error
 	pop	hl
 	pop	af
-	jr	c,ll_init_error
+	jp	c,ll_init_error
 	pop	bc			; удалить сохраненное целевое окно
 	pop	de
 	pop	iy
 	pop	ix
 	ret
+
+	IFNDEF	LIBMAN_L0_L1_ONLY
+;==================================================================
+;  L2: header+code (up to a full 16 KiB page) and the relocation
+;  table are never RLE-compressed, so the packed-prefix bounce-copy
+;  loop above does not apply.  Validate the header fields directly,
+;  then feed the shared page-sharing allocator (ll4a) exactly as
+;  L0/L1 do; ll_l2_finish reads code straight into the target page
+;  and relocates it in chunks against a temp-page copy of the table.
+;
+;  This block lives past the loader's success path so the L0/L1
+;  branch keeps falling straight through into ll_fr/ll4a as in 1.3.
+;==================================================================
+; Куда читается таблица перемещений L2 в 1-й странице временного блока.
+; Ниже неё лежат буфер пути (до 0C110h при ёмкости по умолчанию) и
+; 256-байтовая карта занятости страниц 0C000h..0C0FFh, которую заполняет
+; ll4a и заполняет/сканирует ll5/ll7.  Таблица ограничена 2044 байтами и
+; укладывается в 16 KiB страницы с большим запасом.
+ll2_table_page	equ	0C200h
+
+; Out: CF=0 when hl <= 4000h, CF=1 otherwise.  hl preserved, de clobbered.
+; Used for both code_size and reloc_size: since each is independently bounded
+; to <=4000h, their later sum cannot overflow 16 bits.  The verdict comes back
+; in CF instead of jumping to the error handler directly: the callers own stack
+; entries (l_load's saved registers, a pushed code_size) that llerr_after_path
+; unwinds by count, so a call that never returns would desynchronize it.
+ll2_check_page_limit:
+	ld	de,4000h
+	ex	de,hl
+	or	a
+	sbc	hl,de			; 4000h - value
+	ex	de,hl			; hl restored; CF=1 when value > 4000h
+	ret
+
+ll_l2_entry:
+	ld	l,(ix+4)		; code_size, мл./ст.байт
+	ld	h,(ix+5)
+	ld	a,l
+	sub	32
+	ld	a,h
+	sbc	a,0
+	jp	c,llerr_after_path	; code_size < 32: переполнит ll2_left ниже
+	call	ll2_check_page_limit
+	jp	c,llerr_after_path	; code_size > 4000h
+	ld	c,(ix+6)		; reloc_size, мл./ст.байт
+	ld	b,(ix+7)
+	ld	a,b
+	or	c
+	jr	z,ll2_not_relocatable
+	ld	a,true
+	ld	(ll_fr+1),a
+	push	hl			; сохр. code_size
+	ld	h,b
+	ld	l,c
+	call	ll2_check_page_limit
+	pop	hl			; pop не трогает флаги
+	jp	c,llerr_after_path	; reloc_size > 4000h
+	jr	ll2_reloc_checked
+ll2_not_relocatable:
+	xor	a
+	ld	(ll_fr+1),a
+ll2_reloc_checked:
+	ld	e,(ix+2)		; file_size, мл./ст.байт
+	ld	d,(ix+3)
+	push	hl			; сохр. code_size
+	add	hl,bc			; hl = code_size + reloc_size (не переполн.)
+	or	a
+	sbc	hl,de
+	pop	hl			; pop не трогает флаги
+	jp	nz,llerr_after_path	; L2 не бывает сжатой: file_size обязан
+					; равняться code_size+reloc_size
+	IFNDEF	LIBMAN_L2_ONLY
+	ld	a,true
+	ld	(ll2_active+1),a
+	ENDIF
+	ld	hl,(llsize)		; измеренный физич. размер файла
+	or	a
+	sbc	hl,de
+	jp	c,llerr_after_path	; файл короче заявленного prefix
+
+	; Образ читается здесь, а не в хвосте загрузки, чтобы у L2 сохранялся
+	; инвариант исторического пути: НИ ОДНОГО DSS READ после выделения
+	; целевой страницы.  На реальном железе нарушение этого порядка делает
+	; свежий дескриптор целевой страницы непригодным -- первый же SETWIN3
+	; на него возвращает CF=1/A=0 (подтверждено трассировкой: чтения
+	; проходят, падает SETWIN3 в ll10).  ll0 у L0/L1 читает ровно в этой
+	; точке: временная страница подключена, целевая ещё не выделена.
+	; Порядок чтений совпадает с порядком в файле (код, затем таблица):
+	; DSS READ последовательный, без seek, и после второго чтения файловый
+	; указатель стоит ровно на trailing payload, который ждёт INIT.
+	;
+	; Поля заголовка берутся по абсолютному адресу, а не через (ix+n):
+	; DSS READ не сохраняет ix.  Исторический путь этого не замечает --
+	; он вычитывает заголовок в регистры до своего единственного чтения и
+	; наводит ix на буфер уже после него.  Обращение к (ix+n) после READ
+	; даёт мусор: на железе это вылезло как случайная длина таблицы и
+	; файловый указатель, уехавший за конец файла (init=E2).
+	ld	a,(llid)
+	ld	bc,013Bh		; код -- во 2-ю страницу временного блока
+	rst	10h
+	jp	c,llerr_dss_after_path
+	ld	de,(llbuf+4)		; de = code_size (вместе с заголовком)
+	ld	hl,0C000h
+	ld	bc,0013h		; C=13h: READ.  B не задействован, задан явно
+	ld	a,(llhand)
+	rst	10h
+	jp	c,llerr_dss_after_path	; ошибка чтения кода
+	ld	a,(ll_fr+1)
+	or	a
+	jr	z,ll2_image_read	; таблицы нет -- читать нечего
+	ld	a,(llid)
+	ld	bc,003Bh		; таблица -- в 1-ю страницу, мимо карты
+	rst	10h
+	jp	c,llerr_dss_after_path
+	ld	de,(llbuf+6)		; de = reloc_size
+	ld	hl,ll2_table_page
+	ld	bc,0013h		; C=13h: READ.  B не задействован, задан явно
+	ld	a,(llhand)
+	rst	10h
+	jp	c,llerr_dss_after_path	; ошибка чтения таблицы
+ll2_image_read:
+	ld	hl,(llbuf+4)		; hl = code_size
+	ld	a,(ll_fr+1)
+	or	a
+	jr	nz,ll2_relocatable
+	; Не перемещаемая библа обязана занять свежую страницу
+	; целиком (см. ll8).  3FFFh -- инклюзивный конец страницы,
+	; как и code_size-1 ниже: 4000h завернул бы (ix+3) через
+	; 100h, и скан ll5 посчитал бы страницу почти свободной,
+	; разрешив подселение поверх загруженной библы.
+	ld	hl,3FFFh
+	jp	ll4a
+ll2_relocatable:
+	dec	hl			; hl = code_size - 1 (та же формула, что у L0/L1)
+	jp	ll4a
+
+;==================================================================
+;  L2 tail: (ix+1)=дескр. целевой страницы, (ix+2)/(ix+3)=ст.байты
+;  начала/конца в целевом окне (см. ll9).
+;
+;  Код и таблица уже прочитаны (см. ll_l2_entry): код лежит по 0C000h во
+;  2-й странице временного блока, таблица -- по ll2_table_page в 1-й, за
+;  256-байтовой картой страниц, которой пользуются ll5/ll7.  Здесь остаётся
+;  только релокация, и она не делает ни одного DSS-вызова кроме SETWIN3
+;  между двумя страницами ОДНОГО дескриптора -- ровно то чередование,
+;  которым пользуется распаковщик L0/L1 (loop:).  Дальше образ переносится
+;  в целевую страницу общим циклом ll10 (ll_copy_to_target).
+;
+;  Вход: WIN3 = 1-я страница временного блока (её подключил ll4a), то есть
+;  таблица уже видна; выход в ll_copy_to_target -- всегда со 2-й страницей,
+;  которую ll10 и ожидает увидеть как источник.
+;==================================================================
+ll_l2_finish:
+	IFDEF	LIBMAN_DIAGNOSTICS
+	ld	a,LS_COPY
+	ld	(ll_load_stage_active),a
+	ENDIF
+	ld	a,(ll_fr+1)
+	or	a
+	jp	z,ll2_map_code		; не перемещаемая: править нечего
+	ld	hl,(llbuf+4)		; code_size из копии заголовка
+	ld	de,-32
+	add	hl,de			; hl = размер тела (код без заголовка)
+	ld	a,h
+	or	l
+	jp	z,ll2_map_code		; тело пустое, remake зациклился бы на de=0
+	ld	(ll2_left),hl
+	ld	hl,0C020h		; тело во 2-й странице, сразу за заголовком
+	ld	(ll2_code_addr),hl
+	ld	hl,ll2_table_page
+	ld	(ll2_table_addr),hl
+
+; Каждая итерация входит с подключённой 1-й страницей (таблица) и выходит
+; либо с ней же -- на следующий чанк, либо со 2-й (код) -- наружу, в ll10.
+ll2_chunk:
+	ld	hl,(ll2_left)
+	ld	de,128
+	or	a
+	sbc	hl,de
+	jr	c,ll2_chunk_partial
+	ld	(ll2_left),hl		; остаток -= 128
+	ld	hl,128
+	ld	(ll2_chunk_size),hl
+	jr	ll2_chunk_table
+ll2_chunk_partial:
+	add	hl,de			; hl = исходный остаток (< 128, отменить заём)
+	ld	(ll2_chunk_size),hl
+	ld	hl,0
+	ld	(ll2_left),hl
+ll2_chunk_table:
+	ld	hl,(ll2_table_addr)
+	ld	de,llbuf		; буфер первых 16-ти байт заголовка
+	ld	bc,16
+	ldir				; ldir оставляет hl = источник+16
+	ld	(ll2_table_addr),hl
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,3
+	ld	(l_trace_l2_point),a
+	ENDIF
+	ld	a,(llid)
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	(l_trace_l2_a),a
+	ENDIF
+	ld	bc,013Bh		; подкл. 2-ю страницу (код) в 3-е окно
+	rst	10h
+	jp	c,llerr_dss_with_entry
+	ld	hl,(ll2_code_addr)
+	ld	de,(ll2_chunk_size)
+	ld	iy,llbuf
+	ld	a,(ix+2)
+	ld	b,a			; дельта для remake (см. remake: ld c,b)
+	call	remake
+	ld	(ll2_code_addr),hl	; remake оставляет hl за концом чанка
+	ld	hl,(ll2_left)
+	ld	a,h
+	or	l
+	jp	z,ll_copy_to_target	; всё готово, WIN3 = страница кода
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,4
+	ld	(l_trace_l2_point),a
+	ENDIF
+	ld	a,(llid)
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	(l_trace_l2_a),a
+	ENDIF
+	ld	bc,003Bh		; обратно на 1-ю страницу (таблица)
+	rst	10h
+	jp	c,llerr_dss_with_entry
+	jr	ll2_chunk
+
+ll2_map_code:
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	a,2
+	ld	(l_trace_l2_point),a
+	ENDIF
+	ld	a,(llid)
+	IFDEF	LIBMAN_CALL_TRACE
+	ld	(l_trace_l2_a),a
+	ENDIF
+	ld	bc,013Bh		; подкл. 2-ю страницу (код) в 3-е окно
+	rst	10h
+	jp	c,llerr_dss_with_entry
+	jp	ll_copy_to_target
+	ENDIF				; !LIBMAN_L0_L1_ONLY (L2 entry and tail)
 
 ll_init_error:
 	push	af
@@ -713,6 +1065,7 @@ ll_init_free_error:
 	pop	ix
 	ret
 
+; ll10 is shared by both formats now, so its unwind must exist in every build.
 llcopy_map_final_error:
 	pop	hl			; снять сохраненный адрес источника
 	jr	llerr_dss_with_entry
@@ -741,9 +1094,11 @@ ll_clear_entry:
 	ld	(ix+0),a
 	ret
 
+	IFNDEF	LIBMAN_L2_ONLY
 ll_decode_error:
 	pop	hl			; discard saved packed-source pointer
 	jp	llerr_after_path
+	ENDIF
 
 llerr_dss_before_path:
 	call	ll_record_dss_error
